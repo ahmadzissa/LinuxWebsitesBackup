@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Servers{% endblock %}
+{% block content %}
+<div class="row-head">
+  <h1>Servers</h1>
+  <a class="btn" href="{{ url_for('add_server') }}">+ Link a server</a>
+</div>
+
+{% if servers %}
+<form method="post" action="{{ url_for('push') }}">
+<table>
+  <tr><th></th><th>Name</th><th>Host</th><th>Last backup</th><th>Status</th><th></th></tr>
+  {% for s in servers %}
+  <tr>
+    <td><input type="checkbox" name="server_ids" value="{{ s.id }}"></td>
+    <td><a href="{{ url_for('server', server_id=s.id) }}"><b>{{ s.name }}</b></a></td>
+    <td class="mono">{{ s.host }}:{{ s.port }}</td>
+    <td class="mono">{{ s.last_backup or '—' }}</td>
+    <td><span class="pill {{ s.status }}">{{ s.status }}</span></td>
+    <td><a class="btn small" href="{{ url_for('server', server_id=s.id) }}">Open</a></td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="card">
+  <h2>Push settings to selected servers</h2>
+  <div class="grid2">
+    <fieldset>
+      <legend><label><input type="checkbox" name="push_schedule" checked> Schedule</label></legend>
+      <label>Cron expression
+        <input name="cron" value="{{ settings.default_cron }}" class="mono">
+      </label>
+      <p class="hint">Examples: <code>30 3 * * *</code> daily 03:30 ·
+        <code>15 */6 * * *</code> every 6 h · <code>5 * * * *</code> hourly ·
+        <code>30 3 * * 0</code> weekly Sunday</p>
+    </fieldset>
+    <fieldset>
+      <legend><label><input type="checkbox" name="push_retention"> Retention</label></legend>
+      <label>Recent <input name="keep_daily" value="{{ settings.keep_daily }}" size="3"></label>
+      <label>Weekly <input name="keep_weekly" value="{{ settings.keep_weekly }}" size="3"></label>
+      <label>Monthly <input name="keep_monthly" value="{{ settings.keep_monthly }}" size="3"></label>
+    </fieldset>
+  </div>
+  <button type="submit">Apply to selected servers</button>
+</div>
+</form>
+{% else %}
+<div class="card"><p>No servers linked yet.
+  First set your NAS connection in <a href="{{ url_for('settings') }}">Settings</a>,
+  then <a href="{{ url_for('add_server') }}">link your first server</a>.</p></div>
+{% endif %}
+
+<h2>Recent jobs</h2>
+<table>
+  <tr><th>#</th><th>Server</th><th>Type</th><th>Status</th><th>Started</th></tr>
+  {% for j in jobs %}
+  <tr>
+    <td><a href="{{ url_for('job', job_id=j.id) }}">{{ j.id }}</a></td>
+    <td>{{ j.server_name }}</td>
+    <td>{{ j.type }}</td>
+    <td><span class="pill {{ j.status }}">{{ j.status }}</span></td>
+    <td class="mono">{{ j.created }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5">No jobs yet.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

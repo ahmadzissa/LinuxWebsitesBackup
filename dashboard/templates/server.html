@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}{{ s.name }}{% endblock %}
+{% block content %}
+<div class="row-head">
+  <h1>{{ s.name }} <span class="mono dim">{{ s.host }}:{{ s.port }}</span></h1>
+  <span class="pill {{ s.status }}">{{ s.status }}</span>
+</div>
+
+{% if error %}
+<div class="flash">⚠ Could not reach the server right now: {{ error }}</div>
+{% endif %}
+
+{% if s.status == 'enrolled' %}
+<div class="card">
+  <h2>Complete setup</h2>
+  <p>This server connected itself to the panel but isn't configured yet.
+  One step left: configure its backups and authorize it on the NAS.</p>
+  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+    <label>NAS password for the backup user (used once, not stored —
+      leave empty to add the key manually)
+      <input name="nas_password" type="password"></label>
+    <button name="action" value="complete">Complete setup</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Actions</h2>
+  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" class="inline-forms">
+    <button name="action" value="backup">▶ Backup now</button>
+    <button name="action" value="test">Test NAS connection</button>
+    <button name="action" value="refresh">Refresh status</button>
+  </form>
+  <p class="hint">Last backup: <b>{{ s.last_backup or 'never' }}</b> ·
+     last checked: {{ s.last_check or 'never' }}</p>
+</div>
+
+<div class="card">
+  <h2>Schedule</h2>
+  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+    <label>Cron expression
+      <input name="cron" class="mono" placeholder="30 3 * * *" required></label>
+    <p class="hint"><code>30 3 * * *</code> daily 03:30 ·
+      <code>15 */6 * * *</code> every 6 h · <code>5 * * * *</code> hourly ·
+      <code>30 3 * * 0</code> weekly Sunday</p>
+    <button name="action" value="schedule">Set schedule on this server</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Snapshots on the NAS</h2>
+  {% if snapshots %}
+  <table>
+    <tr><th>Snapshot</th><th></th></tr>
+    {% for snap in snapshots %}
+    <tr>
+      <td class="mono">{{ snap }}</td>
+      <td>
+        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
+              onsubmit="return confirm('Download snapshot {{ snap }} to this server\'s /root/webbackup-restore/ folder? Nothing will be overwritten.')">
+          <input type="hidden" name="snapshot" value="{{ snap }}">
+          <button name="action" value="restore" class="small">Restore (download)</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="hint">Restore downloads the snapshot to the server's
+    <code>/root/webbackup-restore/</code> folder and the job log shows the exact
+    commands to put files/databases back. Nothing is overwritten automatically.</p>
+  {% else %}
+  <p>No snapshots yet (or the server/NAS is unreachable).</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Configuration file</h2>
+  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+    <textarea name="conf" rows="18" class="mono">{{ conf }}</textarea>
+    <button name="action" value="save_conf">Save to server</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Recent jobs for this server</h2>
+  <table>
+    <tr><th>#</th><th>Type</th><th>Status</th><th>Started</th></tr>
+    {% for j in jobs %}
+    <tr>
+      <td><a href="{{ url_for('job', job_id=j.id) }}">{{ j.id }}</a></td>
+      <td>{{ j.type }}</td>
+      <td><span class="pill {{ j.status }}">{{ j.status }}</span></td>
+      <td class="mono">{{ j.created }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">No jobs yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card danger">
+  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
+        onsubmit="return confirm('Remove this server from the dashboard? Backups on the NAS and the agent on the server stay untouched.')">
+    <button name="action" value="unlink" class="danger">Remove from dashboard</button>
+  </form>
+</div>
+{% endblock %}

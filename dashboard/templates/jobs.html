@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+<table>
+  <tr><th>#</th><th>Server</th><th>Type</th><th>Status</th><th>Started</th><th>Finished</th></tr>
+  {% for j in jobs %}
+  <tr>
+    <td><a href="{{ url_for('job', job_id=j.id) }}">{{ j.id }}</a></td>
+    <td>{{ j.server_name }}</td>
+    <td>{{ j.type }}</td>
+    <td><span class="pill {{ j.status }}">{{ j.status }}</span></td>
+    <td class="mono">{{ j.created }}</td>
+    <td class="mono">{{ j.finished or '—' }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">No jobs yet.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

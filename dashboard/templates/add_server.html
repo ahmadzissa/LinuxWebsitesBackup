@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Add a server{% endblock %}
+{% block content %}
+<h1>Add a server</h1>
+{% if not nas_ready %}
+<div class="flash">⚠ Set your Synology NAS connection in
+  <a href="{{ url_for('settings') }}">Settings</a> first — servers are
+  configured to back up to it automatically.</div>
+{% endif %}
+
+<div class="card">
+  <h2>Option A — run one command on the server (recommended)</h2>
+  <p>SSH into the web server and paste this as root. It downloads the backup
+  agent <b>from this panel</b>, installs it, connects the server to the panel,
+  and it appears on the Servers page automatically:</p>
+  <pre class="log">curl -fsSL {{ panel_url }}/enroll.sh | sudo bash -s -- {{ panel_url }} {{ token }}</pre>
+  <p class="hint">
+    If a Tailscale auth key is saved in <a href="{{ url_for('settings') }}">Settings</a>,
+    this command also installs and connects Tailscale on the server
+    automatically (needed to reach the NAS) — nothing else to do on the server.<br>
+    If the server's SSH runs on a non-standard port, append the IP and port:
+    <code>… {{ token }} &lt;server-ip&gt; &lt;ssh-port&gt;</code><br>
+    When it finishes, come back here, open the server and click
+    <b>Complete setup</b> (you'll enter the NAS password once).
+  </p>
+</div>
+
+<div class="card">
+  <h2>Option B — link with a root password</h2>
+  <p>The panel connects to the server with a password <b>once</b> (never
+  stored) and does everything itself, including the agent install.</p>
+  <form method="post">
+    <div class="grid2">
+      <label>Display name <input name="name" placeholder="e.g. web1"></label>
+      <label>Host / IP <input name="host" required class="mono"></label>
+      <label>SSH port <input name="port" value="22" size="5"></label>
+      <label>SSH user <input name="ssh_user" value="root"></label>
+      <label>SSH password (used once, not stored)
+        <input name="password" type="password" required></label>
+      <label>NAS password for the backup user (used once, not stored;
+        empty = add key manually)
+        <input name="nas_password" type="password"></label>
+    </div>
+    <button type="submit">Link server</button>
+  </form>
+</div>
+{% endblock %}

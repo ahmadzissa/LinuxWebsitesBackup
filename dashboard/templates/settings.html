@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<div class="card">
+  <h2>Synology NAS connection</h2>
+  <p class="hint">Used to configure every server you link. No NAS password is
+    stored — it's asked for once when linking a server, only to authorize that
+    server's key.</p>
+  <form method="post">
+    <div class="grid2">
+      <label>NAS address (DDNS name / IP / Tailscale IP)
+        <input name="syno_host" value="{{ s.syno_host }}" class="mono"></label>
+      <label>NAS SSH port
+        <input name="syno_port" value="{{ s.syno_port }}" size="6"></label>
+      <label>NAS backup user
+        <input name="syno_user" value="{{ s.syno_user }}"></label>
+      <label>Backup folder on NAS
+        <input name="syno_path" value="{{ s.syno_path }}" class="mono"></label>
+    </div>
+    <h2>Tailscale auto-setup (optional but recommended)</h2>
+    <p class="hint">Paste a Tailscale <b>auth key</b> here and the enroll
+      command will install + connect Tailscale on every new server
+      automatically — true one-command setup. Create it at
+      <b>login.tailscale.com → Settings → Keys → Generate auth key</b>:
+      enable <b>Reusable</b>, set the longest expiry (the key's expiry only
+      limits how long you can enroll new servers with it, not the servers
+      themselves — but still disable key expiry per machine afterwards).</p>
+    <label>Tailscale auth key (starts with tskey-auth-…)
+      <input name="ts_authkey" value="{{ s.ts_authkey }}" class="mono"
+             placeholder="tskey-auth-xxxxxxxxxxxx"></label>
+    <h2>Defaults for newly linked servers</h2>
+    <div class="grid2">
+      <label>Default schedule (cron)
+        <input name="default_cron" value="{{ s.default_cron }}" class="mono"></label>
+      <label>Keep recent
+        <input name="keep_daily" value="{{ s.keep_daily }}" size="4"></label>
+      <label>Keep weekly
+        <input name="keep_weekly" value="{{ s.keep_weekly }}" size="4"></label>
+      <label>Keep monthly
+        <input name="keep_monthly" value="{{ s.keep_monthly }}" size="4"></label>
+    </div>
+    <button type="submit">Save settings</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Install an update</h2>
+  <p class="hint">Upload a new <code>LinuxWebsitesBackup.tar.gz</code> bundle
+    and the panel updates itself — no SSH needed. Your settings, servers,
+    login and keys are kept. The panel restarts automatically (a few seconds
+    of downtime).</p>
+  <form method="post" action="{{ url_for('update_panel') }}"
+        enctype="multipart/form-data"
+        onsubmit="return confirm('Install this update and restart the panel?')">
+    <label>Update bundle (.tar.gz)
+      <input type="file" name="package" accept=".gz,.tgz" required></label>
+    <button type="submit">Upload &amp; install update</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Dashboard SSH public key</h2>
+  <p class="hint">Installed automatically when you link a server with a
+    password. For servers where you prefer to add it yourself, append this line
+    to <code>/root/.ssh/authorized_keys</code>:</p>
+  <pre class="log small">{{ pubkey or '(key not generated yet — run the installer)' }}</pre>
+</div>
+{% endblock %}

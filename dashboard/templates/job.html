@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Job #{{ j.id }}{% endblock %}
+{% block head %}
+{% if j.status == 'running' %}<meta http-equiv="refresh" content="3">{% endif %}
+{% endblock %}
+{% block content %}
+<div class="row-head">
+  <h1>Job #{{ j.id }} — {{ j.type }}</h1>
+  <span class="pill {{ j.status }}">{{ j.status }}</span>
+</div>
+<p class="hint">Server: <b>{{ j.server_name }}</b> · started {{ j.created }}
+  {% if j.finished %} · finished {{ j.finished }}{% endif %}
+  {% if j.status == 'running' %} · <i>page refreshes automatically…</i>{% endif %}</p>
+<pre class="log">{{ j.output or '(waiting for output…)' }}</pre>
+{% if j.server_id %}
+<a class="btn" href="{{ url_for('server', server_id=j.server_id) }}">← Back to server</a>
+{% else %}
+<a class="btn" href="{{ url_for('index') }}">← Back to servers</a>
+{% endif %}
+{% endblock %}

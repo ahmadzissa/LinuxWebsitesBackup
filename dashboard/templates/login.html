@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Login{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>Sign in</h1>
+  <form method="post">
+    <label>Username <input name="username" autofocus required></label>
+    <label>Password <input name="password" type="password" required></label>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+{% endblock %}

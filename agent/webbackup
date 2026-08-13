@@ -1,0 +1,937 @@
+#!/usr/bin/env bash
+#
+# webbackup — self-contained website backup system for Linux -> Synology NAS
+#
+# Backs up web roots, databases (MySQL/MariaDB & PostgreSQL), and server
+# configs to a Synology NAS over rsync/SSH, with auto-detection, tiered
+# retention, scheduling, notifications and an interactive admin menu.
+#
+# Usage: webbackup <command>
+#   setup      Interactive setup wizard (first run)
+#   menu       Admin menu (settings, run, restore, ...)
+#   run        Run a backup now
+#   detect     Show what would be auto-detected on this server
+#   test       Test the connection to the Synology NAS
+#   list       List snapshots stored on the NAS
+#   snapshots  List snapshot names only (machine-readable)
+#   laststate  Print last run state line (machine-readable)
+#   restore    Download a snapshot from the NAS to this server
+#              (non-interactive: webbackup restore <snapshot> [dest])
+#   schedule   Configure the backup schedule (cron)
+#   status     Show last backup status and recent log
+#   config     Print current configuration
+#   uninstall  Remove webbackup from this server
+#
+set -u
+
+VERSION="1.2.0"
+CONFIG_DIR="/etc/webbackup"
+CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
+DB_CNF="$CONFIG_DIR/db.cnf"
+STATE_DIR="/var/lib/webbackup"
+LOG_FILE="/var/log/webbackup.log"
+LOCK_FILE="/var/run/webbackup.lock"
+CRON_FILE="/etc/cron.d/webbackup"
+
+# ---------------------------------------------------------------- defaults --
+SYNO_HOST=""                   # NAS hostname / IP / DDNS name
+SYNO_PORT="22"                 # SSH port on the NAS (or forwarded port)
+SYNO_USER=""                   # NAS user dedicated to backups
+SYNO_PATH="/volume1/WebBackups"  # Shared folder path on the NAS
+SSH_KEY="/root/.ssh/webbackup_ed25519"
+
+BACKUP_FILES="yes"             # back up website files
+WEB_ROOTS="auto"               # "auto" or space-separated list of dirs
+EXTRA_DIRS=""                  # extra dirs to include
+EXCLUDES="node_modules .git cache/* *.log tmp/*"   # tar exclude patterns
+
+BACKUP_MYSQL="auto"            # auto | yes | no
+MYSQL_DBS="all"                # "all" or space-separated list
+BACKUP_PGSQL="auto"            # auto | yes | no
+
+BACKUP_CONFIGS="yes"           # /etc/nginx, apache, php, letsencrypt, cron...
+
+KEEP_DAILY="7"                 # most-recent snapshots to keep
+KEEP_WEEKLY="4"                # weekly snapshots to keep (0 = off)
+KEEP_MONTHLY="6"               # monthly snapshots to keep (0 = off)
+
+STAGING_DIR="/var/backups/webbackup"   # local staging area
+BWLIMIT="0"                    # rsync bandwidth limit in KB/s (0 = unlimited)
+SCHEDULE_CRON="30 3 * * *"     # default: daily 03:30
+NOTIFY_WEBHOOK=""              # optional webhook URL (Slack/Discord/ntfy...)
+NOTIFY_EMAIL=""                # optional email (needs local mail command)
+NOTIFY_ON="failure"            # always | failure | never
+
+# ------------------------------------------------------------------ helpers --
+C_RED=$'\033[0;31m'; C_GRN=$'\033[0;32m'; C_YLW=$'\033[0;33m'
+C_CYN=$'\033[0;36m'; C_BLD=$'\033[1m'; C_OFF=$'\033[0m'
+
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s\n' "${C_GRN}✔${C_OFF} $*"; }
+warn() { printf '%s\n' "${C_YLW}⚠${C_OFF} $*"; }
+err()  { printf '%s\n' "${C_RED}✘${C_OFF} $*" >&2; }
+hdr()  { printf '\n%s\n' "${C_BLD}${C_CYN}== $* ==${C_OFF}"; }
+die()  { err "$*"; exit 1; }
+
+log() {
+    mkdir -p "$(dirname "$LOG_FILE")"
+    printf '%s [%s] %s\n' "$(date '+%F %T')" "$1" "$2" >> "$LOG_FILE"
+}
+
+need_root() { [ "$(id -u)" -eq 0 ] || die "Please run as root (sudo webbackup $*)"; }
+
+# ask "Prompt" "default" -> REPLY
+ask() {
+    local prompt="$1" def="${2:-}" ans
+    if [ -n "$def" ]; then
+        read -r -p "$prompt [$def]: " ans || true
+        REPLY="${ans:-$def}"
+    else
+        read -r -p "$prompt: " ans || true
+        REPLY="$ans"
+    fi
+}
+
+# yesno "Prompt" "y|n" -> returns 0 for yes
+yesno() {
+    local prompt="$1" def="${2:-y}" ans
+    while true; do
+        read -r -p "$prompt [$( [ "$def" = y ] && echo Y/n || echo y/N )]: " ans || true
+        ans="${ans:-$def}"
+        case "$ans" in
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+        esac
+    done
+}
+
+human_size() {  # bytes -> human
+    numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || echo "${1:-0}B"
+}
+
+# ------------------------------------------------------------------- config --
+load_config() {
+    # shellcheck disable=SC1090
+    [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+}
+
+save_config() {
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_FILE" <<EOF
+# webbackup configuration — edit with 'webbackup menu' or by hand
+SYNO_HOST="$SYNO_HOST"
+SYNO_PORT="$SYNO_PORT"
+SYNO_USER="$SYNO_USER"
+SYNO_PATH="$SYNO_PATH"
+SSH_KEY="$SSH_KEY"
+
+BACKUP_FILES="$BACKUP_FILES"
+WEB_ROOTS="$WEB_ROOTS"
+EXTRA_DIRS="$EXTRA_DIRS"
+EXCLUDES="$EXCLUDES"
+
+BACKUP_MYSQL="$BACKUP_MYSQL"
+MYSQL_DBS="$MYSQL_DBS"
+BACKUP_PGSQL="$BACKUP_PGSQL"
+
+BACKUP_CONFIGS="$BACKUP_CONFIGS"
+
+KEEP_DAILY="$KEEP_DAILY"
+KEEP_WEEKLY="$KEEP_WEEKLY"
+KEEP_MONTHLY="$KEEP_MONTHLY"
+
+STAGING_DIR="$STAGING_DIR"
+BWLIMIT="$BWLIMIT"
+SCHEDULE_CRON="$SCHEDULE_CRON"
+NOTIFY_WEBHOOK="$NOTIFY_WEBHOOK"
+NOTIFY_EMAIL="$NOTIFY_EMAIL"
+NOTIFY_ON="$NOTIFY_ON"
+EOF
+    chmod 600 "$CONFIG_FILE"
+}
+
+require_configured() {
+    load_config
+    [ -n "$SYNO_HOST" ] && [ -n "$SYNO_USER" ] || \
+        die "Not configured yet — run: webbackup setup"
+}
+
+# ---------------------------------------------------------------- ssh layer --
+SSH_OPTS=()
+build_ssh_opts() {
+    SSH_OPTS=(-p "$SYNO_PORT" -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new)
+    [ -f "$SSH_KEY" ] && SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes)
+}
+
+run_ssh() {  # run_ssh <remote command string>
+    build_ssh_opts
+    ssh "${SSH_OPTS[@]}" "$SYNO_USER@$SYNO_HOST" "$1"
+}
+
+rsync_up() {  # rsync_up <local_dir/> <remote_subpath>
+    build_ssh_opts
+    local extra=()
+    [ "${BWLIMIT:-0}" != "0" ] && extra+=(--bwlimit="$BWLIMIT")
+    rsync -az --partial "${extra[@]}" -e "ssh ${SSH_OPTS[*]}" \
+        "$1" "$SYNO_USER@$SYNO_HOST:$2"
+}
+
+rsync_down() {  # rsync_down <remote_subpath/> <local_dir>
+    build_ssh_opts
+    rsync -az --partial -e "ssh ${SSH_OPTS[*]}" \
+        "$SYNO_USER@$SYNO_HOST:$1" "$2"
+}
+
+# -------------------------------------------------------------- detection ---
+have_hestia()     { [ -d /usr/local/hestia ]; }
+have_cloudpanel() { [ -d /home/clp ] || command -v clpctl >/dev/null 2>&1; }
+
+detect_webroots() {
+    local roots=""
+    # HestiaCP: sites live in /home/<user>/web/<domain>/public_html
+    if have_hestia; then
+        local h
+        for h in /home/*/web/*/public_html; do
+            [ -d "$h" ] && roots+=" $h"
+        done
+    fi
+    # CloudPanel: sites live in /home/<site-user>/htdocs/<domain>
+    if have_cloudpanel; then
+        local c
+        for c in /home/*/htdocs/*; do
+            case "$c" in /home/clp/*) continue ;; esac   # skip the panel app itself
+            [ -d "$c" ] && roots+=" $c"
+        done
+    fi
+    # nginx
+    if command -v nginx >/dev/null 2>&1; then
+        roots+=" $(nginx -T 2>/dev/null | awk '$1=="root"{gsub(/;/,"",$2); print $2}' | sort -u | tr '\n' ' ')"
+    fi
+    # apache (Debian & RHEL layouts)
+    for actl in apache2ctl apachectl httpd; do
+        if command -v "$actl" >/dev/null 2>&1; then
+            roots+=" $("$actl" -S 2>/dev/null | awk -F'docroot ' '/docroot/{print $2}' | awk '{print $1}' | sort -u | tr '\n' ' ')"
+            roots+=" $(grep -rhs '^\s*DocumentRoot' /etc/apache2 /etc/httpd 2>/dev/null | awk '{gsub(/"/,"",$2); print $2}' | sort -u | tr '\n' ' ')"
+            break
+        fi
+    done
+    # common locations (incl. XAMPP/LAMPP)
+    local d
+    for d in /var/www /srv/www /usr/share/nginx/html /opt/lampp/htdocs /home/*/public_html; do
+        [ -d "$d" ] && roots+=" $d"
+    done
+    # dedupe, drop system-y paths and children of already-included dirs
+    local out="" r keep p
+    for r in $(printf '%s\n' $roots | sort -u); do
+        [ -d "$r" ] || continue
+        case "$r" in /|/etc*|/usr/lib*) continue ;; esac
+        keep=1
+        for p in $out; do
+            case "$r" in "$p"/*) keep=0 ;; esac
+        done
+        [ "$keep" = 1 ] && out+="$r "
+    done
+    printf '%s\n' "$out" | xargs -n1 2>/dev/null | sort -u
+}
+
+mysql_cmd() {  # echoes the mysql client invocation honoring saved creds
+    local m="mysql"
+    command -v mysql >/dev/null 2>&1 || m="/opt/lampp/bin/mysql"
+    if [ -f "$DB_CNF" ]; then
+        echo "$m --defaults-extra-file=$DB_CNF"
+    else
+        echo "$m"
+    fi
+}
+
+mysqldump_cmd() {
+    local m="mysqldump"
+    command -v mysqldump >/dev/null 2>&1 || m="/opt/lampp/bin/mysqldump"
+    if [ -f "$DB_CNF" ]; then
+        echo "$m --defaults-extra-file=$DB_CNF"
+    else
+        echo "$m"
+    fi
+}
+
+mysql_available() {
+    $(mysql_cmd) -N -e "SELECT 1" >/dev/null 2>&1
+}
+
+detect_mysql_dbs() {
+    $(mysql_cmd) -N -e "SHOW DATABASES" 2>/dev/null \
+        | grep -Ev '^(information_schema|performance_schema|sys|mysql)$'
+}
+
+pgsql_available() {
+    command -v psql >/dev/null 2>&1 && \
+        sudo -u postgres psql -Atc "SELECT 1" >/dev/null 2>&1
+}
+
+detect_pgsql_dbs() {
+    sudo -u postgres psql -Atc \
+        "SELECT datname FROM pg_database WHERE datistemplate = false AND datname <> 'postgres'" 2>/dev/null
+}
+
+detect_config_dirs() {
+    local d out=""
+    for d in /etc/nginx /etc/apache2 /etc/httpd /etc/php* /etc/mysql /etc/my.cnf /etc/my.cnf.d \
+             /etc/letsencrypt /etc/cron.d /etc/crontab /var/spool/cron /opt/lampp/etc \
+             /usr/local/hestia/conf /usr/local/hestia/data /usr/local/hestia/ssl \
+             /home/clp/htdocs/app/data /etc/cloudpanel; do
+        [ -e "$d" ] && out+="$d "
+    done
+    printf '%s\n' $out
+}
+
+cmd_detect() {
+    hdr "Auto-detection report for $(hostname)"
+    say ""
+    say "${C_BLD}Control panel:${C_OFF}"
+    if have_hestia; then
+        say "  • HestiaCP detected — sites in /home/*/web/*/public_html + panel config included"
+    elif have_cloudpanel; then
+        say "  • CloudPanel detected — sites in /home/*/htdocs/* + panel database included"
+    else
+        say "  (none detected — using standard nginx/Apache/common locations)"
+    fi
+    say ""
+    say "${C_BLD}Web roots:${C_OFF}"
+    local r found=0
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        found=1
+        say "  • $r  ($(du -sh "$r" 2>/dev/null | cut -f1 || echo '?'))"
+    done < <(detect_webroots)
+    [ "$found" = 1 ] || say "  (none found)"
+
+    say ""
+    say "${C_BLD}MySQL/MariaDB:${C_OFF}"
+    if mysql_available; then
+        detect_mysql_dbs | sed 's/^/  • /'
+    else
+        say "  (not available — no server, or credentials needed: webbackup menu → Database credentials)"
+    fi
+
+    say ""
+    say "${C_BLD}PostgreSQL:${C_OFF}"
+    if pgsql_available; then
+        detect_pgsql_dbs | sed 's/^/  • /'
+    else
+        say "  (not available)"
+    fi
+
+    say ""
+    say "${C_BLD}Config locations:${C_OFF}"
+    detect_config_dirs | sed 's/^/  • /'
+    say ""
+}
+
+# --------------------------------------------------------------- mysql creds --
+setup_mysql_creds() {
+    hdr "MySQL/MariaDB credentials"
+    if mysql_available; then
+        ok "MySQL already reachable (socket auth or saved credentials)."
+        yesno "Replace saved credentials anyway?" n || return 0
+    fi
+    ask "MySQL admin user" "root"; local u="$REPLY"
+    local p; read -r -s -p "MySQL password (input hidden): " p; echo
+    mkdir -p "$CONFIG_DIR"
+    cat > "$DB_CNF" <<EOF
+[client]
+user=$u
+password=$p
+EOF
+    chmod 600 "$DB_CNF"
+    if mysql_available; then
+        ok "MySQL connection works."
+    else
+        warn "Still can't connect with those credentials — check them (file: $DB_CNF)."
+    fi
+}
+
+# -------------------------------------------------------------------- setup --
+cmd_setup() {
+    need_root setup
+    load_config
+    hdr "webbackup setup wizard  (v$VERSION)"
+    say "This wizard configures backups from this server to your Synology NAS."
+    say "You can re-run it any time; current values are shown as defaults."
+    say ""
+
+    hdr "1/5 — Synology NAS connection"
+    say "On the NAS first (see README): enable SSH + rsync, create a backup user,"
+    say "create a shared folder, and (for a remote VPS) forward a port to the NAS."
+    ask "NAS address (DDNS name / public IP / QuickConnect won't work — use host)" "$SYNO_HOST"; SYNO_HOST="$REPLY"
+    ask "NAS SSH port" "$SYNO_PORT"; SYNO_PORT="$REPLY"
+    ask "NAS backup username" "$SYNO_USER"; SYNO_USER="$REPLY"
+    ask "Backup folder on NAS" "$SYNO_PATH"; SYNO_PATH="$REPLY"
+
+    # SSH key
+    if [ ! -f "$SSH_KEY" ]; then
+        say ""
+        say "Generating a dedicated SSH key for backups..."
+        mkdir -p "$(dirname "$SSH_KEY")"
+        ssh-keygen -t ed25519 -N "" -C "webbackup@$(hostname)" -f "$SSH_KEY" >/dev/null
+        ok "Key created: $SSH_KEY"
+    fi
+    say ""
+    say "Public key for the NAS user's authorized_keys:"
+    say "${C_CYN}$(cat "$SSH_KEY.pub")${C_OFF}"
+    say ""
+    if yesno "Try to install the key on the NAS now with ssh-copy-id (asks for the NAS password)?" y; then
+        if ssh-copy-id -i "$SSH_KEY.pub" -p "$SYNO_PORT" "$SYNO_USER@$SYNO_HOST"; then
+            ok "Key installed."
+        else
+            warn "ssh-copy-id failed — you can paste the public key manually (see README, section 'SSH key')."
+        fi
+    fi
+    save_config
+    say ""
+    if cmd_test quiet; then ok "NAS connection verified."; else
+        warn "Connection not working yet — finish NAS-side setup, then run: webbackup test"
+    fi
+
+    hdr "2/5 — What to back up"
+    yesno "Back up website files?" "$( [ "$BACKUP_FILES" = yes ] && echo y || echo n )" && BACKUP_FILES=yes || BACKUP_FILES=no
+    if [ "$BACKUP_FILES" = yes ]; then
+        say ""
+        say "Auto-detected web roots:"
+        detect_webroots | sed 's/^/  • /'
+        if yesno "Use auto-detection (recommended — picks up new sites automatically)?" y; then
+            WEB_ROOTS="auto"
+        else
+            ask "Space-separated list of directories" "$( [ "$WEB_ROOTS" = auto ] && echo "/var/www" || echo "$WEB_ROOTS" )"
+            WEB_ROOTS="$REPLY"
+        fi
+        ask "Extra directories to include (space-separated, empty for none)" "$EXTRA_DIRS"; EXTRA_DIRS="$REPLY"
+        ask "Exclude patterns" "$EXCLUDES"; EXCLUDES="$REPLY"
+    fi
+
+    say ""
+    if mysql_available; then
+        ok "MySQL/MariaDB detected."
+        yesno "Back up MySQL databases?" y && BACKUP_MYSQL=yes || BACKUP_MYSQL=no
+    else
+        if command -v mysql >/dev/null 2>&1 || [ -x /opt/lampp/bin/mysql ]; then
+            warn "MySQL client found but connection failed."
+            if yesno "Enter MySQL credentials now?" y; then
+                setup_mysql_creds
+                mysql_available && BACKUP_MYSQL=yes || BACKUP_MYSQL=no
+            else
+                BACKUP_MYSQL=no
+            fi
+        else
+            say "No MySQL/MariaDB found — skipping."
+            BACKUP_MYSQL=no
+        fi
+    fi
+    if [ "$BACKUP_MYSQL" = yes ]; then
+        say "Databases found:"; detect_mysql_dbs | sed 's/^/  • /'
+        if yesno "Back up ALL databases (recommended — includes future ones)?" y; then
+            MYSQL_DBS="all"
+        else
+            ask "Space-separated list of databases" "$MYSQL_DBS"; MYSQL_DBS="$REPLY"
+        fi
+    fi
+
+    say ""
+    if pgsql_available; then
+        ok "PostgreSQL detected."
+        yesno "Back up PostgreSQL databases?" y && BACKUP_PGSQL=yes || BACKUP_PGSQL=no
+    else
+        BACKUP_PGSQL=no
+    fi
+
+    say ""
+    yesno "Back up server configs (nginx/apache/php/SSL certs/cron)?" y && BACKUP_CONFIGS=yes || BACKUP_CONFIGS=no
+
+    hdr "3/5 — Retention"
+    say "Snapshots kept on the NAS. Tiered retention: recent + weekly + monthly."
+    ask "Keep how many recent (e.g. daily) snapshots?" "$KEEP_DAILY"; KEEP_DAILY="$REPLY"
+    ask "Keep how many weekly snapshots? (0 = off)" "$KEEP_WEEKLY"; KEEP_WEEKLY="$REPLY"
+    ask "Keep how many monthly snapshots? (0 = off)" "$KEEP_MONTHLY"; KEEP_MONTHLY="$REPLY"
+
+    hdr "4/5 — Schedule"
+    setup_schedule_interactive
+
+    hdr "5/5 — Notifications (optional)"
+    ask "Webhook URL for notifications (Slack/Discord/ntfy, empty = none)" "$NOTIFY_WEBHOOK"; NOTIFY_WEBHOOK="$REPLY"
+    ask "Email address for notifications (empty = none; needs a local mail command)" "$NOTIFY_EMAIL"; NOTIFY_EMAIL="$REPLY"
+    if [ -n "$NOTIFY_WEBHOOK$NOTIFY_EMAIL" ]; then
+        ask "Notify on: always / failure / never" "$NOTIFY_ON"; NOTIFY_ON="$REPLY"
+    fi
+
+    save_config
+    install_cron
+    hdr "Done"
+    ok "Configuration saved to $CONFIG_FILE"
+    ok "Schedule installed: $SCHEDULE_CRON  (see $CRON_FILE)"
+    say ""
+    say "Next steps:"
+    say "  webbackup test     # verify NAS connection"
+    say "  webbackup run      # run your first backup now"
+    say "  webbackup menu     # admin menu"
+}
+
+setup_schedule_interactive() {
+    say "  1) Daily            (pick a time)"
+    say "  2) Twice a day      (03:30 and 15:30)"
+    say "  3) Every 6 hours"
+    say "  4) Every hour"
+    say "  5) Weekly           (Sunday, pick a time)"
+    say "  6) Custom cron expression"
+    ask "Choose" "1"
+    case "$REPLY" in
+        1) ask "Time (HH:MM, 24h)" "03:30"
+           SCHEDULE_CRON="${REPLY#*:} ${REPLY%%:*} * * *" ;;
+        2) SCHEDULE_CRON="30 3,15 * * *" ;;
+        3) SCHEDULE_CRON="15 */6 * * *" ;;
+        4) SCHEDULE_CRON="5 * * * *" ;;
+        5) ask "Time (HH:MM, 24h)" "03:30"
+           SCHEDULE_CRON="${REPLY#*:} ${REPLY%%:*} * * 0" ;;
+        6) ask "Cron expression (min hour dom mon dow)" "$SCHEDULE_CRON"
+           SCHEDULE_CRON="$REPLY" ;;
+    esac
+}
+
+install_cron() {
+    cat > "$CRON_FILE" <<EOF
+# webbackup schedule — managed by 'webbackup schedule'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+$SCHEDULE_CRON root /usr/local/bin/webbackup run --cron
+EOF
+    chmod 644 "$CRON_FILE"
+}
+
+cmd_schedule() {
+    need_root schedule
+    require_configured
+    hdr "Backup schedule"
+    say "Current: $SCHEDULE_CRON"
+    setup_schedule_interactive
+    save_config
+    install_cron
+    ok "Schedule updated: $SCHEDULE_CRON"
+}
+
+# --------------------------------------------------------------------- test --
+cmd_test() {
+    require_configured
+    local quiet="${1:-}"
+    [ "$quiet" = quiet ] || hdr "Testing connection to $SYNO_USER@$SYNO_HOST:$SYNO_PORT"
+    if ! run_ssh "echo CONNECTED" 2>/dev/null | grep -q CONNECTED; then
+        [ "$quiet" = quiet ] || err "SSH connection failed. Check host/port/user, NAS SSH service, and the SSH key."
+        return 1
+    fi
+    [ "$quiet" = quiet ] || ok "SSH connection works."
+    if ! run_ssh "mkdir -p '$SYNO_PATH/$(hostname)' && touch '$SYNO_PATH/$(hostname)/.write-test' && rm -f '$SYNO_PATH/$(hostname)/.write-test'" 2>/dev/null; then
+        [ "$quiet" = quiet ] || err "Cannot write to $SYNO_PATH — check the folder exists and the user has read/write permission."
+        return 1
+    fi
+    [ "$quiet" = quiet ] || ok "Write access to $SYNO_PATH confirmed."
+    if ! command -v rsync >/dev/null 2>&1; then
+        [ "$quiet" = quiet ] || err "rsync is not installed locally."
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------- run --
+resolve_roots() {
+    if [ "$WEB_ROOTS" = "auto" ]; then detect_webroots; else printf '%s\n' $WEB_ROOTS; fi
+    [ -n "$EXTRA_DIRS" ] && printf '%s\n' $EXTRA_DIRS
+    true
+}
+
+cmd_run() {
+    need_root run
+    require_configured
+    local cron_mode="${1:-}"
+
+    # prevent overlapping runs
+    exec 200>"$LOCK_FILE"
+    if ! flock -n 200; then
+        log WARN "Backup already running — skipped."
+        die "Another backup is already running."
+    fi
+
+    local host stamp snap staging t0 rc=0 fail_reason=""
+    host="$(hostname)"
+    stamp="$(date +%F_%H%M)"
+    snap="$SYNO_PATH/$host/$stamp"
+    staging="$STAGING_DIR/$stamp"
+    t0=$(date +%s)
+
+    log INFO "Backup started (snapshot $stamp)"
+    [ "$cron_mode" = "--cron" ] || hdr "Backup $host → $SYNO_HOST  ($stamp)"
+
+    mkdir -p "$staging/files" "$staging/databases" "$staging/configs"
+
+    # -- website files
+    if [ "$BACKUP_FILES" = yes ]; then
+        local r name ex_args=()
+        local pat
+        for pat in $EXCLUDES; do ex_args+=(--exclude="$pat"); done
+        while IFS= read -r r; do
+            [ -d "$r" ] || continue
+            name="$(echo "$r" | sed 's|^/||; s|/|_|g')"
+            [ "$cron_mode" = "--cron" ] || say "  archiving $r ..."
+            if ! tar -czf "$staging/files/$name.tar.gz" "${ex_args[@]}" -C "$(dirname "$r")" "$(basename "$r")" 2>>"$LOG_FILE"; then
+                warn "tar reported warnings/errors for $r (see log)"
+            fi
+        done < <(resolve_roots)
+    fi
+
+    # -- MySQL / MariaDB
+    if [ "$BACKUP_MYSQL" = yes ] || { [ "$BACKUP_MYSQL" = auto ] && mysql_available; }; then
+        if mysql_available; then
+            local dbs db
+            if [ "$MYSQL_DBS" = "all" ]; then dbs="$(detect_mysql_dbs)"; else dbs="$MYSQL_DBS"; fi
+            for db in $dbs; do
+                [ "$cron_mode" = "--cron" ] || say "  dumping MySQL db $db ..."
+                if ! $(mysqldump_cmd) --single-transaction --quick --routines --triggers --events "$db" 2>>"$LOG_FILE" | gzip > "$staging/databases/mysql_$db.sql.gz"; then
+                    rc=1; fail_reason="mysqldump failed for $db"
+                    log ERROR "mysqldump failed for $db"
+                fi
+            done
+        else
+            rc=1; fail_reason="MySQL backup enabled but connection failed"
+            log ERROR "MySQL backup enabled but connection failed"
+        fi
+    fi
+
+    # -- PostgreSQL
+    if [ "$BACKUP_PGSQL" = yes ] || { [ "$BACKUP_PGSQL" = auto ] && pgsql_available; }; then
+        if pgsql_available; then
+            local pdb
+            sudo -u postgres pg_dumpall -g 2>>"$LOG_FILE" | gzip > "$staging/databases/pgsql_globals.sql.gz" || true
+            while IFS= read -r pdb; do
+                [ -n "$pdb" ] || continue
+                [ "$cron_mode" = "--cron" ] || say "  dumping PostgreSQL db $pdb ..."
+                if ! sudo -u postgres pg_dump "$pdb" 2>>"$LOG_FILE" | gzip > "$staging/databases/pgsql_$pdb.sql.gz"; then
+                    rc=1; fail_reason="pg_dump failed for $pdb"
+                    log ERROR "pg_dump failed for $pdb"
+                fi
+            done < <(detect_pgsql_dbs)
+        fi
+    fi
+
+    # -- configs
+    if [ "$BACKUP_CONFIGS" = yes ]; then
+        [ "$cron_mode" = "--cron" ] || say "  archiving server configs ..."
+        local cfgs
+        cfgs="$(detect_config_dirs | tr '\n' ' ')"
+        # shellcheck disable=SC2086
+        [ -n "$cfgs" ] && tar -czf "$staging/configs/etc-configs.tar.gz" $cfgs 2>>"$LOG_FILE" || true
+        crontab -l > "$staging/configs/root-crontab.txt" 2>/dev/null || true
+        command -v dpkg >/dev/null 2>&1 && dpkg --get-selections > "$staging/configs/packages.txt" 2>/dev/null
+        command -v rpm  >/dev/null 2>&1 && rpm -qa > "$staging/configs/packages.txt" 2>/dev/null
+    fi
+
+    # -- manifest
+    {
+        echo "webbackup $VERSION"
+        echo "host: $host"
+        echo "date: $(date '+%F %T %Z')"
+        echo "kernel: $(uname -r)"
+        echo ""
+        echo "contents:"
+        (cd "$staging" && find . -type f -printf '  %10s  %P\n' 2>/dev/null || find "$staging" -type f)
+    } > "$staging/manifest.txt"
+
+    local size
+    size="$(du -sb "$staging" 2>/dev/null | cut -f1 || echo 0)"
+
+    # -- upload
+    [ "$cron_mode" = "--cron" ] || say "  uploading to NAS ($(human_size "$size")) ..."
+    if run_ssh "mkdir -p '$snap'" && rsync_up "$staging/" "$snap/"; then
+        log INFO "Upload complete ($(human_size "$size"))"
+    else
+        rc=1; fail_reason="${fail_reason:-upload to NAS failed}"
+        log ERROR "Upload to NAS failed"
+    fi
+
+    # -- rotate remote snapshots (only after a successful upload)
+    if [ "$rc" = 0 ]; then
+        rotate_remote "$host" || warn "Rotation reported an issue (see log)."
+    fi
+
+    # -- clean local staging (keep nothing locally on success; keep on failure for debugging)
+    if [ "$rc" = 0 ]; then
+        rm -rf "$staging"
+        # remove any older leftover staging dirs
+        find "$STAGING_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null
+    fi
+
+    local dt=$(( $(date +%s) - t0 ))
+    mkdir -p "$STATE_DIR"
+    if [ "$rc" = 0 ]; then
+        echo "ok|$stamp|$size|$dt" > "$STATE_DIR/last"
+        log INFO "Backup finished OK in ${dt}s"
+        [ "$cron_mode" = "--cron" ] || ok "Backup complete in ${dt}s ($(human_size "$size")) → $snap"
+        notify ok "✅ Backup OK: $host → $SYNO_HOST ($stamp, $(human_size "$size"), ${dt}s)"
+    else
+        echo "fail|$stamp|$size|$dt|$fail_reason" > "$STATE_DIR/last"
+        log ERROR "Backup FAILED: $fail_reason"
+        err "Backup FAILED: $fail_reason (staging kept at $staging)"
+        notify fail "❌ Backup FAILED: $host → $SYNO_HOST ($stamp): $fail_reason"
+        exit 1
+    fi
+}
+
+# -------------------------------------------------------------- rotation ----
+snapshot_list_remote() {  # prints snapshot dir names, oldest first
+    run_ssh "ls -1 '$SYNO_PATH/$1' 2>/dev/null" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}$' | sort
+}
+
+rotate_remote() {
+    local host="$1" snaps keep="" s d
+    snaps="$(snapshot_list_remote "$host")" || return 1
+    [ -n "$snaps" ] || return 0
+
+    # newest KEEP_DAILY
+    keep+="$(printf '%s\n' "$snaps" | tail -n "$KEEP_DAILY")"$'\n'
+
+    # newest snapshot per ISO week, most recent KEEP_WEEKLY weeks
+    if [ "${KEEP_WEEKLY:-0}" -gt 0 ] 2>/dev/null; then
+        keep+="$(printf '%s\n' "$snaps" | awk -F_ '{print $1"_"$2}' | while IFS= read -r s; do
+            d="${s%_*}"
+            echo "$(date -d "$d" +%G-%V 2>/dev/null || echo x) $s"
+        done | awk '$1!="x"{last[$1]=$2} END{for (w in last) print w, last[w]}' \
+          | sort -r | head -n "$KEEP_WEEKLY" | awk '{print $2}')"$'\n'
+    fi
+
+    # newest snapshot per month, most recent KEEP_MONTHLY months
+    if [ "${KEEP_MONTHLY:-0}" -gt 0 ] 2>/dev/null; then
+        keep+="$(printf '%s\n' "$snaps" | while IFS= read -r s; do
+            echo "${s:0:7} $s"
+        done | awk '{last[$1]=$2} END{for (m in last) print m, last[m]}' \
+          | sort -r | head -n "$KEEP_MONTHLY" | awk '{print $2}')"$'\n'
+    fi
+
+    local del=""
+    while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        if ! printf '%s\n' "$keep" | grep -qx "$s"; then
+            del+="'$SYNO_PATH/$host/$s' "
+        fi
+    done <<< "$snaps"
+
+    if [ -n "$del" ]; then
+        log INFO "Rotation: deleting $(echo "$del" | wc -w) old snapshot(s)"
+        run_ssh "rm -rf -- $del"
+    fi
+}
+
+# ------------------------------------------------------------------- list ----
+cmd_list() {
+    require_configured
+    local host="$(hostname)"
+    hdr "Snapshots on $SYNO_HOST:$SYNO_PATH/$host"
+    local out
+    out="$(run_ssh "cd '$SYNO_PATH/$host' 2>/dev/null && du -sh */ 2>/dev/null" || true)"
+    if [ -n "$out" ]; then
+        say "$out"
+    else
+        say "(no snapshots yet — run: webbackup run)"
+    fi
+}
+
+# ----------------------------------------------------------------- restore ---
+cmd_restore() {
+    need_root restore
+    require_configured
+    local host="$(hostname)" sel="${1:-}" dest_arg="${2:-}"
+    hdr "Restore from $SYNO_HOST"
+    local snaps s
+    snaps="$(snapshot_list_remote "$host")"
+    [ -n "$snaps" ] || die "No snapshots found on the NAS for $host."
+    if [ -n "$sel" ]; then
+        # non-interactive: snapshot name given on the command line
+        printf '%s\n' "$snaps" | grep -qx "$sel" || die "Snapshot '$sel' not found. Available: $(printf '%s ' $snaps)"
+        s="$sel"
+    else
+        say "Available snapshots (oldest → newest):"
+        local i=1
+        while IFS= read -r s; do say "  $i) $s"; i=$((i+1)); done <<< "$snaps"
+        ask "Which snapshot number?" "$(( i - 1 ))"
+        s="$(printf '%s\n' "$snaps" | sed -n "${REPLY}p")"
+        [ -n "$s" ] || die "Invalid selection."
+    fi
+    local dest="${dest_arg:-/root/webbackup-restore/$s}"
+    if [ -z "$sel" ]; then ask "Download to" "$dest"; dest="$REPLY"; fi
+    mkdir -p "$dest"
+    say "Downloading snapshot $s ..."
+    rsync_down "$SYNO_PATH/$host/$s/" "$dest/" || die "Download failed."
+    ok "Snapshot downloaded to: $dest"
+    say ""
+    say "To restore website files:   extract the archives from $dest/files/ into the"
+    say "  ORIGINAL PARENT directory (each archive contains its top-level folder):"
+    say "  e.g.  var_www.tar.gz holds 'www/'  →  tar -xzf $dest/files/var_www.tar.gz -C /var/"
+    say "To restore a MySQL db:      gunzip < $dest/databases/mysql_DBNAME.sql.gz | mysql DBNAME"
+    say "To restore configs:         extract $dest/configs/etc-configs.tar.gz carefully (paths are absolute-relative)"
+    say ""
+    warn "Nothing was overwritten automatically — restores are manual on purpose."
+}
+
+# ------------------------------------------------------------------ status ---
+cmd_status() {
+    load_config
+    hdr "webbackup status — $(hostname)"
+    if [ -f "$STATE_DIR/last" ]; then
+        IFS='|' read -r st stamp size dt reason < "$STATE_DIR/last"
+        if [ "$st" = ok ]; then
+            ok "Last backup: SUCCESS at $stamp ($(human_size "$size"), ${dt}s)"
+        else
+            err "Last backup: FAILED at $stamp — ${reason:-unknown}"
+        fi
+    else
+        say "No backup has run yet."
+    fi
+    say "Schedule:   ${SCHEDULE_CRON:-not set}  ($CRON_FILE)"
+    say "NAS target: ${SYNO_USER:-?}@${SYNO_HOST:-?}:${SYNO_PATH:-?} (port ${SYNO_PORT:-22})"
+    say ""
+    say "${C_BLD}Recent log:${C_OFF}"
+    tail -n 15 "$LOG_FILE" 2>/dev/null | sed 's/^/  /' || say "  (no log yet)"
+}
+
+cmd_config() {
+    require_configured
+    hdr "Current configuration ($CONFIG_FILE)"
+    grep -v '^\s*$' "$CONFIG_FILE" | sed 's/^/  /'
+}
+
+# -------------------------------------------------------------------- menu ---
+cmd_menu() {
+    need_root menu
+    while true; do
+        load_config
+        hdr "webbackup admin menu — $(hostname)"
+        say "  1) Run backup now"
+        say "  2) Status & recent log"
+        say "  3) List snapshots on NAS"
+        say "  4) Restore a snapshot"
+        say "  5) Test NAS connection"
+        say "  6) Show auto-detection report"
+        say "  7) Change schedule"
+        say "  8) Edit settings"
+        say "  9) Database credentials (MySQL)"
+        say "  0) Quit"
+        ask "Choose" ""
+        case "$REPLY" in
+            1) cmd_run ;;
+            2) cmd_status ;;
+            3) cmd_list ;;
+            4) cmd_restore ;;
+            5) cmd_test ;;
+            6) cmd_detect ;;
+            7) cmd_schedule ;;
+            8) menu_settings ;;
+            9) setup_mysql_creds ;;
+            0|q|"") return 0 ;;
+        esac
+        say ""
+        read -r -p "Press Enter to continue..." _ || true
+    done
+}
+
+menu_settings() {
+    while true; do
+        load_config
+        hdr "Settings"
+        say "  1) NAS host          : $SYNO_HOST"
+        say "  2) NAS port          : $SYNO_PORT"
+        say "  3) NAS user          : $SYNO_USER"
+        say "  4) NAS folder        : $SYNO_PATH"
+        say "  5) Backup files      : $BACKUP_FILES"
+        say "  6) Web roots         : $WEB_ROOTS"
+        say "  7) Extra dirs        : ${EXTRA_DIRS:-—}"
+        say "  8) Exclude patterns  : $EXCLUDES"
+        say "  9) Backup MySQL      : $BACKUP_MYSQL   (databases: $MYSQL_DBS)"
+        say " 10) Backup PostgreSQL : $BACKUP_PGSQL"
+        say " 11) Backup configs    : $BACKUP_CONFIGS"
+        say " 12) Retention         : $KEEP_DAILY recent / $KEEP_WEEKLY weekly / $KEEP_MONTHLY monthly"
+        say " 13) Bandwidth limit   : ${BWLIMIT} KB/s (0 = unlimited)"
+        say " 14) Staging dir       : $STAGING_DIR"
+        say " 15) Webhook URL       : ${NOTIFY_WEBHOOK:-—}"
+        say " 16) Notify email      : ${NOTIFY_EMAIL:-—}"
+        say " 17) Notify on         : $NOTIFY_ON"
+        say "  0) Back"
+        ask "Change which setting?" "0"
+        case "$REPLY" in
+            1) ask "NAS host" "$SYNO_HOST"; SYNO_HOST="$REPLY" ;;
+            2) ask "NAS port" "$SYNO_PORT"; SYNO_PORT="$REPLY" ;;
+            3) ask "NAS user" "$SYNO_USER"; SYNO_USER="$REPLY" ;;
+            4) ask "NAS folder" "$SYNO_PATH"; SYNO_PATH="$REPLY" ;;
+            5) yesno "Back up website files?" y && BACKUP_FILES=yes || BACKUP_FILES=no ;;
+            6) ask "Web roots ('auto' or space-separated dirs)" "$WEB_ROOTS"; WEB_ROOTS="$REPLY" ;;
+            7) ask "Extra dirs (space-separated, empty for none)" "$EXTRA_DIRS"; EXTRA_DIRS="$REPLY" ;;
+            8) ask "Exclude patterns" "$EXCLUDES"; EXCLUDES="$REPLY" ;;
+            9) ask "Backup MySQL (auto/yes/no)" "$BACKUP_MYSQL"; BACKUP_MYSQL="$REPLY"
+               ask "Databases ('all' or space-separated list)" "$MYSQL_DBS"; MYSQL_DBS="$REPLY" ;;
+            10) ask "Backup PostgreSQL (auto/yes/no)" "$BACKUP_PGSQL"; BACKUP_PGSQL="$REPLY" ;;
+            11) yesno "Back up server configs?" y && BACKUP_CONFIGS=yes || BACKUP_CONFIGS=no ;;
+            12) ask "Recent snapshots to keep" "$KEEP_DAILY"; KEEP_DAILY="$REPLY"
+                ask "Weekly to keep (0=off)" "$KEEP_WEEKLY"; KEEP_WEEKLY="$REPLY"
+                ask "Monthly to keep (0=off)" "$KEEP_MONTHLY"; KEEP_MONTHLY="$REPLY" ;;
+            13) ask "Bandwidth limit KB/s (0 = unlimited)" "$BWLIMIT"; BWLIMIT="$REPLY" ;;
+            14) ask "Staging dir" "$STAGING_DIR"; STAGING_DIR="$REPLY" ;;
+            15) ask "Webhook URL (empty = none)" "$NOTIFY_WEBHOOK"; NOTIFY_WEBHOOK="$REPLY" ;;
+            16) ask "Notify email (empty = none)" "$NOTIFY_EMAIL"; NOTIFY_EMAIL="$REPLY" ;;
+            17) ask "Notify on (always/failure/never)" "$NOTIFY_ON"; NOTIFY_ON="$REPLY" ;;
+            0|"") return 0 ;;
+        esac
+        save_config
+        ok "Saved."
+    done
+}
+
+# ------------------------------------------------------------- notifications --
+notify() {  # notify <ok|fail> <message>
+    local kind="$1" msg="$2"
+    case "$NOTIFY_ON" in
+        never) return 0 ;;
+        failure) [ "$kind" = fail ] || return 0 ;;
+    esac
+    if [ -n "$NOTIFY_WEBHOOK" ] && command -v curl >/dev/null 2>&1; then
+        curl -fsS -m 15 -H 'Content-Type: application/json' \
+            -d "{\"text\":\"$msg\",\"content\":\"$msg\"}" \
+            "$NOTIFY_WEBHOOK" >/dev/null 2>&1 || \
+        curl -fsS -m 15 -d "$msg" "$NOTIFY_WEBHOOK" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$NOTIFY_EMAIL" ] && command -v mail >/dev/null 2>&1; then
+        echo "$msg" | mail -s "webbackup: $(hostname)" "$NOTIFY_EMAIL" || true
+    fi
+}
+
+# --------------------------------------------------------------- uninstall ---
+cmd_uninstall() {
+    need_root uninstall
+    yesno "Remove webbackup, its schedule and config from this server? (NAS snapshots are kept)" n || exit 0
+    rm -f "$CRON_FILE" /usr/local/bin/webbackup
+    yesno "Also delete config ($CONFIG_DIR) and logs?" n && rm -rf "$CONFIG_DIR" "$STATE_DIR" "$LOG_FILE"
+    ok "webbackup removed. Snapshots on the NAS were NOT touched."
+}
+
+# --------------------------------------------------------------------- main --
+case "${1:-menu}" in
+    setup)     cmd_setup ;;
+    menu)      cmd_menu ;;
+    run)       load_config; cmd_run "${2:-}" ;;
+    detect)    cmd_detect ;;
+    test)      cmd_test ;;
+    list)      cmd_list ;;
+    snapshots) require_configured; snapshot_list_remote "$(hostname)" ;;
+    laststate) cat "$STATE_DIR/last" 2>/dev/null || echo "none" ;;
+    restore)   cmd_restore "${2:-}" "${3:-}" ;;
+    schedule)  cmd_schedule ;;
+    status)    cmd_status ;;
+    config)    cmd_config ;;
+    uninstall) cmd_uninstall ;;
+    version|--version|-v) echo "webbackup $VERSION" ;;
+    help|--help|-h|*)
+        awk 'NR>1 && /^#/ {sub(/^# ?/,""); print} NR>1 && !/^#/ {exit}' "$0"
+        ;;
+esac
