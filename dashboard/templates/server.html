@@ -48,7 +48,7 @@
   <h2>Snapshots on the NAS</h2>
   {% if snapshots %}
   <table>
-    <tr><th>Snapshot</th><th></th><th></th></tr>
+    <tr><th>Snapshot</th><th></th><th></th><th></th></tr>
     {% for snap in snapshots %}
     <tr>
       <td class="mono">{{ snap }}</td>
@@ -60,6 +60,14 @@
               onsubmit="return confirm('Download snapshot {{ snap }} to this server\'s /root/webbackup-restore/ folder? Nothing will be overwritten.')">
           <input type="hidden" name="snapshot" value="{{ snap }}">
           <button name="action" value="restore" class="small">Restore to server</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
+              onsubmit="return confirm('Delete snapshot {{ snap }} from the NAS permanently?')
+                     && confirm('Are you SURE? Snapshot {{ snap }} will be gone forever — this cannot be undone.')">
+          <input type="hidden" name="snapshot" value="{{ snap }}">
+          <button name="action" value="delete_snapshot" class="small danger">🗑 Delete</button>
         </form>
       </td>
     </tr>
@@ -99,8 +107,24 @@
 </div>
 
 <div class="card danger">
+  <h2>Remove server</h2>
   <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-        onsubmit="return confirm('Remove this server from the dashboard? Backups on the NAS and the agent on the server stay untouched.')">
+        onsubmit="
+          var del = this.querySelector('[name=delete_backups]').checked;
+          if (!confirm(del
+              ? 'Remove this server AND DELETE ALL ITS BACKUPS from the NAS?'
+              : 'Remove this server from the dashboard? Backups on the NAS and the agent on the server stay untouched.')) return false;
+          if (del) {
+            var typed = prompt('FINAL CONFIRMATION — this deletes every snapshot of this server forever.\nType the server name ({{ s.name }}) to proceed:');
+            if (typed !== {{ s.name|tojson }}) { alert('Name did not match — nothing was done.'); return false; }
+            this.querySelector('[name=confirm_name]').value = typed;
+          }
+          return true;">
+    <label class="chk">
+      <input type="checkbox" name="delete_backups" value="1">
+      Also permanently delete ALL of this server's backups from the NAS
+    </label>
+    <input type="hidden" name="confirm_name" value="">
     <button name="action" value="unlink" class="danger">Remove from dashboard</button>
   </form>
 </div>

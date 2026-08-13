@@ -433,19 +433,41 @@ def api_enroll():
             c.execute("INSERT INTO servers(name,host,port,ssh_user,created,status) "
                       "VALUES(?,?,?,?,?,'enrolled')",
                       (hostname or ip, ip, port, "root", now()))
+    # If everything needed is saved in Settings, finish the setup
+    # automatically — no clicks in the panel required.
+    if get_setting("syno_host") and get_setting("syno_user") and get_setting("syno_pass"):
+        with db() as c:
+            row = c.execute("SELECT * FROM servers WHERE host=?", (ip,)).fetchone()
+        if row and not os.environ.get("WBD_NO_AUTOSETUP"):
+            start_job(row["id"], row["name"], "auto setup (after enroll)",
+                      configure_server_work(row, get_setting("syno_pass"),
+                                            retry_connect=True))
     try:
         return dashboard_pubkey() + "\n"
     except OSError:
         return "panel has no SSH key (run the installer)", 500
 
 
-def configure_server_work(row, nas_pass):
-    """Finish setup for an enrolled server: config, NAS key, schedule, test."""
+def configure_server_work(row, nas_pass, retry_connect=False):
+    """Finish setup for an enrolled server: config, NAS key, schedule, test.
+    With retry_connect (auto-setup right after enroll), waits for the enroll
+    script to finish authorizing the panel's key on the server."""
     server_id = row["id"]
 
     def work(append):
         append("[1/4] Connecting with the panel's SSH key ...")
-        client = connect_server(row)
+        attempts = 8 if retry_connect else 1
+        client = None
+        for i in range(attempts):
+            try:
+                client = connect_server(row)
+                break
+            except Exception as exc:
+                if i == attempts - 1:
+                    raise
+                append("      not ready yet (%s) — retrying in 10s (%d/%d)"
+                       % (exc, i + 1, attempts))
+                time.sleep(10)
         append("      connected.")
 
         append("[2/4] Writing configuration and schedule ...")
@@ -672,7 +694,57 @@ def server_action(server_id):
             client.close()
             return True
         job_id = start_job(server_id, row["name"], "save config", work)
+    elif action == "delete_snapshot":
+        snap = request.form.get("snapshot", "")
+        if not SNAP_RE.fullmatch(snap):
+            abort(400)
+
+        def work(append):
+            host = server_hostname(row)
+            base = get_setting("syno_path").rstrip("/")
+            if not base.startswith("/volume") or not host:
+                raise RuntimeError("refusing: unexpected NAS path")
+            nas = nas_connect()
+            rc, out = sshops.run(nas, "rm -rf -- %s"
+                                 % sshops.shq("%s/%s/%s" % (base, host, snap)),
+                                 timeout=300)
+            nas.close()
+            append("Snapshot %s deleted from the NAS." % snap if rc == 0
+                   else "Delete failed: %s" % out)
+            return rc == 0
+        job_id = start_job(server_id, row["name"], "delete snapshot " + snap, work)
     elif action == "unlink":
+        if request.form.get("delete_backups"):
+            # destructive path: requires the typed server name to match
+            if request.form.get("confirm_name", "") != row["name"]:
+                flash("Confirmation name did not match — nothing was deleted.")
+                return redirect(url_for("server", server_id=server_id))
+
+            def work(append):
+                try:
+                    host = server_hostname(row)
+                except Exception:
+                    host = row["name"]
+                    append("Server unreachable — using its name '%s' as the NAS folder." % host)
+                base = get_setting("syno_path").rstrip("/")
+                if not base.startswith("/volume") or not host:
+                    raise RuntimeError("refusing: unexpected NAS path")
+                append("Deleting ALL backups: %s/%s ..." % (base, host))
+                nas = nas_connect()
+                rc, out = sshops.run(nas, "rm -rf -- %s"
+                                     % sshops.shq("%s/%s" % (base, host)),
+                                     timeout=1800)
+                nas.close()
+                if rc != 0:
+                    append("NAS delete failed: %s — server NOT removed from panel." % out)
+                    return False
+                append("All backups deleted from the NAS.")
+                with db() as c:
+                    c.execute("DELETE FROM servers WHERE id=?", (server_id,))
+                append("Server removed from the dashboard.")
+                return True
+            job_id = start_job(server_id, row["name"], "remove server + delete backups", work)
+            return redirect(url_for("job", job_id=job_id))
         with db() as c:
             c.execute("DELETE FROM servers WHERE id=?", (server_id,))
         flash("Server removed from dashboard (nothing was changed on the server or NAS).")
