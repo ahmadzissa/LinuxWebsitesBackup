@@ -11,10 +11,10 @@
 <div class="flash">⚠ Could not reach the server right now: {{ error }}</div>
 {% endif %}
 
-{% if s.status == 'enrolled' %}
+{% if s.status == 'enrolled' or not conf %}
 <div class="card">
   <h2>Complete setup</h2>
-  <p>This server connected itself to the panel but isn't configured yet.
+  <p>This server is connected to the panel but has no backup configuration yet.
   One step left: configure its backups and authorize it on the NAS.</p>
   <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
     <label>NAS password for the backup user (leave empty to use the one saved

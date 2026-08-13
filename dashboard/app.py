@@ -304,7 +304,11 @@ def refresh_server_state(client, server_id, append=None):
             status = "ok" if parts[0] == "ok" else "fail"
             last_backup = parts[1]
     elif out == "none":
-        status = "no-backup-yet"
+        # never clobber the 'enrolled' marker before setup is completed
+        with db() as c:
+            cur = c.execute("SELECT status FROM servers WHERE id=?",
+                            (server_id,)).fetchone()
+        status = "enrolled" if (cur and cur["status"] == "enrolled") else "no-backup-yet"
     with db() as c:
         c.execute("UPDATE servers SET status=?, last_backup=?, last_check=? WHERE id=?",
                   (status, last_backup, now(), server_id))
