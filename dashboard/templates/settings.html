@@ -51,19 +51,27 @@
     {% endif %}
     <label>Key expiry date (from the Tailscale dialog when you generated it)
       <input name="ts_expiry" type="date" value="{{ s.ts_expiry }}"></label>
-    <h2>Notifications on backup failure</h2>
-    <p class="hint">Applied to newly linked servers (use the push panel on the
-      home page for existing ones). Webhook works out of the box (Discord,
-      Slack, ntfy.sh…). Email additionally requires a <code>mail</code> command
-      on each server (e.g. <code>apt install mailutils</code>) — if unsure,
-      use a webhook.</p>
+    <h2>Notifications on backup failure (sent by the panel, for ALL servers)</h2>
+    <p class="hint">The panel watches every server (every 15 min + instantly
+      when a panel-run backup fails) and sends the alert itself — servers need
+      no mail setup. Webhook works with zero config (Discord, Slack,
+      ntfy.sh…). For email, also fill the SMTP fields below.</p>
     <div class="grid2">
       <label>Notify email
         <input name="notify_email" value="{{ s.notify_email }}"
                placeholder="you@example.com" autocomplete="off"></label>
       <label>Webhook URL
         <input name="notify_webhook" value="{{ s.notify_webhook }}" class="mono"
-               placeholder="https://discord.com/api/webhooks/…" autocomplete="off"></label>
+               placeholder="https://discord.com/api/webhooks/…  or  https://ntfy.sh/your-topic" autocomplete="off"></label>
+      <label>SMTP host (for email; e.g. smtp.gmail.com)
+        <input name="smtp_host" value="{{ s.smtp_host }}" class="mono" autocomplete="off"></label>
+      <label>SMTP port
+        <input name="smtp_port" value="{{ s.smtp_port }}" size="6"></label>
+      <label>SMTP username
+        <input name="smtp_user" value="{{ s.smtp_user }}" autocomplete="off"></label>
+      <label>SMTP password {% if saved.smtp_pass %}<span class="pill ok">✔ saved</span>{% endif %}
+        <input name="smtp_pass" type="password" autocomplete="new-password"
+               placeholder="{{ 'saved — type new to replace, clear to remove' if saved.smtp_pass else 'app password' }}"></label>
     </div>
     <h2>Defaults for newly linked servers</h2>
     <div class="grid2">

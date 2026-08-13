@@ -9,11 +9,82 @@
 {% if error %}
 <div class="flash">⚠ Could not read the snapshot from the NAS: {{ error }}</div>
 {% else %}
+
+{% if sites %}
 <div class="card">
-  <h2>Files in this snapshot</h2>
-  <p class="hint">Click Download to save any file straight to your computer —
-    site archives (.tar.gz), database dumps (.sql.gz), configs. Nothing is
-    changed on the server or the NAS.</p>
+  <h2>Websites in this snapshot — restore one, or download</h2>
+  <table>
+    <tr><th>Website archive</th><th></th><th></th></tr>
+    {% for site in sites %}
+    <tr>
+      <td class="mono">{{ site }}</td>
+      <td><a class="btn small"
+             href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site) }}">⬇ Download</a></td>
+      <td>
+        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
+              onsubmit="return confirm('Restore {{ site }} from {{ snap }} INTO PLACE on the server? Current files of this website will be overwritten.')
+                     && confirm('Second confirmation: overwrite the live files of this website with the {{ snap }} version?')">
+          <input type="hidden" name="snapshot" value="{{ snap }}">
+          <input type="hidden" name="item" value="{{ site }}">
+          <button name="action" value="restore_site" class="small danger">↩ Restore this website</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="hint">Restore extracts the archive back to its original location,
+    overwriting current files of that website only — other sites, databases
+    and configs are untouched.</p>
+
+  <h2>Restore a single file</h2>
+  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
+        onsubmit="return confirm('Restore this one file from {{ snap }}, overwriting the current version?')">
+    <div class="row-fields">
+      <label>From website archive
+        <select name="item">
+          {% for site in sites %}<option value="{{ site }}">{{ site }}</option>{% endfor %}
+        </select></label>
+      <label>Path inside the archive
+        <input name="fpath" class="mono" required
+               placeholder="e.g. mysite.com/config/app.php"></label>
+    </div>
+    <input type="hidden" name="snapshot" value="{{ snap }}">
+    <button name="action" value="restore_file" class="small">↩ Restore this file only</button>
+    <p class="hint">The path starts with the site's top folder (same as you see
+      when opening the downloaded archive). Only that one file is written back —
+      nothing else changes.</p>
+  </form>
+</div>
+{% endif %}
+
+{% if dbs %}
+<div class="card">
+  <h2>Databases in this snapshot — restore one</h2>
+  <table>
+    <tr><th>Database</th><th></th></tr>
+    {% for db in dbs %}
+    <tr>
+      <td class="mono">{{ db }}</td>
+      <td>
+        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
+              onsubmit="return confirm('Restore database {{ db }} from {{ snap }}? Its current tables will be replaced with the snapshot version.')
+                     && confirm('Second confirmation: overwrite the LIVE database {{ db }} with the {{ snap }} version?')">
+          <input type="hidden" name="snapshot" value="{{ snap }}">
+          <input type="hidden" name="db" value="{{ db }}">
+          <button name="action" value="restore_db" class="small danger">↩ Restore this database</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="hint">Only the chosen database is replaced — all other databases
+    stay as they are. For a single table or single file, download the archive
+    below and extract just what you need.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>All files — download to your computer</h2>
   <table>
     <tr><th>File</th><th>Size</th><th></th></tr>
     {% for f in files %}

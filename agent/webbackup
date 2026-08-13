@@ -24,7 +24,7 @@
 #
 set -u
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -681,6 +681,8 @@ cmd_run() {
             if ! tar -czf "$staging/files/$name.tar.gz" "${ex_args[@]}" -C "$(dirname "$r")" "$(basename "$r")" 2>>"$LOG_FILE"; then
                 warn "tar reported warnings/errors for $r (see log)"
             fi
+            # path map: lets the panel restore a single site to the right place
+            printf '%s\t%s\n' "$name.tar.gz" "$(dirname "$r")" >> "$staging/files/PATHS.txt"
         done < <(resolve_roots)
     fi
 
@@ -904,6 +906,68 @@ cmd_restore() {
     warn "Nothing was overwritten automatically — restores are manual on purpose."
 }
 
+# -------------------------------------------------------- selective restore --
+cmd_restore_site() {  # webbackup restore-site <snapshot> <archive.tar.gz>
+    need_root restore-site
+    require_configured
+    local snap="$1" arch="$2" host tmp parent
+    host="$(hostname)"; tmp="/tmp/webbackup-item"
+    [ -n "$snap" ] && [ -n "$arch" ] || die "usage: webbackup restore-site <snapshot> <archive.tar.gz>"
+    rm -rf "$tmp"; mkdir -p "$tmp"
+    say "Fetching $arch from snapshot $snap ..."
+    rsync_down "$SYNO_PATH/$host/$snap/files/$arch" "$tmp/" || die "download failed"
+    rsync_down "$SYNO_PATH/$host/$snap/files/PATHS.txt" "$tmp/" 2>/dev/null || \
+        die "this snapshot has no path map (made by an older agent) — use full restore instead"
+    parent="$(awk -F'\t' -v a="$arch" '$1==a{print $2; exit}' "$tmp/PATHS.txt")"
+    [ -n "$parent" ] || die "no path mapping for $arch in this snapshot"
+    mkdir -p "$parent"
+    say "Extracting into $parent/ (existing files are overwritten) ..."
+    tar -xzf "$tmp/$arch" -C "$parent" || die "extract failed"
+    rm -rf "$tmp"
+    say "✔ Website restored from $snap into $parent/"
+}
+
+cmd_restore_file() {  # webbackup restore-file <snapshot> <archive.tar.gz> <path/inside/archive>
+    need_root restore-file
+    require_configured
+    local snap="$1" arch="$2" relpath="$3" host tmp parent
+    host="$(hostname)"; tmp="/tmp/webbackup-item"
+    [ -n "$snap" ] && [ -n "$arch" ] && [ -n "$relpath" ] || \
+        die "usage: webbackup restore-file <snapshot> <archive.tar.gz> <path/inside/archive>"
+    case "$relpath" in /*|*..*) die "invalid path" ;; esac
+    rm -rf "$tmp"; mkdir -p "$tmp"
+    say "Fetching $arch from snapshot $snap ..."
+    rsync_down "$SYNO_PATH/$host/$snap/files/$arch" "$tmp/" || die "download failed"
+    rsync_down "$SYNO_PATH/$host/$snap/files/PATHS.txt" "$tmp/" 2>/dev/null || \
+        die "this snapshot has no path map — use full restore instead"
+    parent="$(awk -F'\t' -v a="$arch" '$1==a{print $2; exit}' "$tmp/PATHS.txt")"
+    [ -n "$parent" ] || die "no path mapping for $arch"
+    say "Restoring single file: $parent/$relpath (overwritten if it exists) ..."
+    tar -xzf "$tmp/$arch" -C "$parent" "$relpath" || die "'$relpath' not found in the archive (check the exact path, including the site's top folder)"
+    rm -rf "$tmp"
+    say "✔ File restored: $parent/$relpath"
+}
+
+cmd_restore_db() {  # webbackup restore-db <snapshot> <database>
+    need_root restore-db
+    require_configured
+    local snap="$1" db="$2" host tmp
+    host="$(hostname)"; tmp="/tmp/webbackup-item"
+    [ -n "$snap" ] && [ -n "$db" ] || die "usage: webbackup restore-db <snapshot> <database>"
+    rm -rf "$tmp"; mkdir -p "$tmp"
+    say "Fetching database bundle from snapshot $snap ..."
+    rsync_down "$SYNO_PATH/$host/$snap/databases/mysql_all_databases.tar" "$tmp/" || die "download failed"
+    tar -xf "$tmp/mysql_all_databases.tar" -C "$tmp" "mysql_$db.sql.gz" 2>/dev/null || \
+        die "database '$db' not found in this snapshot"
+    ensure_mysql_creds >/dev/null 2>&1 || true
+    mysql_available || die "cannot connect to MySQL"
+    $(mysql_cmd) -e "CREATE DATABASE IF NOT EXISTS \`$db\`"
+    say "Importing $db (existing tables in it are replaced) ..."
+    gunzip < "$tmp/mysql_$db.sql.gz" | $(mysql_cmd) "$db" || die "import failed"
+    rm -rf "$tmp"
+    say "✔ Database $db restored from $snap"
+}
+
 # ------------------------------------------------------------------ status ---
 cmd_status() {
     load_config
@@ -1054,6 +1118,9 @@ case "${1:-menu}" in
     snapshots) require_configured; snapshot_list_remote "$(hostname)" ;;
     laststate) cat "$STATE_DIR/last" 2>/dev/null || echo "none" ;;
     restore)   cmd_restore "${2:-}" "${3:-}" ;;
+    restore-site) cmd_restore_site "${2:-}" "${3:-}" ;;
+    restore-db)   cmd_restore_db "${2:-}" "${3:-}" ;;
+    restore-file) cmd_restore_file "${2:-}" "${3:-}" "${4:-}" ;;
     schedule)  cmd_schedule ;;
     status)    cmd_status ;;
     config)    cmd_config ;;

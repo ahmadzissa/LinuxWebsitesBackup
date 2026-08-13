@@ -5,10 +5,12 @@ Runs as a small Flask service. Talks to linked servers over SSH (paramiko)
 using its own key, deploys/configures the webbackup agent, triggers backups
 and restores, and pushes schedule/retention settings to selected servers.
 """
+import json
 import os
 import re
 import secrets
 import shutil
+import smtplib
 import stat as statmod
 import sqlite3
 import subprocess
@@ -16,7 +18,9 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.request
 from datetime import datetime
+from email.mime.text import MIMEText
 from functools import wraps
 
 from flask import (Flask, Response, abort, flash, g, redirect,
@@ -66,6 +70,11 @@ DEFAULT_SETTINGS = {
     "repo_dir": "",
     "notify_email": "",
     "notify_webhook": "",
+    "smtp_host": "",
+    "smtp_port": "587",
+    "smtp_user": "",
+    "smtp_pass": "",
+    "smtp_from": "",
 }
 
 # --------------------------------------------------------------------- db ---
@@ -103,6 +112,12 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
         """)
+    # migration: column for de-duplicating failure notifications
+    try:
+        with db() as c:
+            c.execute("ALTER TABLE servers ADD COLUMN notified_stamp TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # already exists
 
 
 def get_setting(key):
@@ -174,6 +189,94 @@ def logout():
     return redirect(url_for("login"))
 
 
+# ------------------------------------------------- central notifications ----
+def notify_send(subject, message):
+    """Send a failure alert from the PANEL (no per-server mail setup needed).
+    Webhook: works out of the box. Email: uses the SMTP settings if set."""
+    sent = False
+    wh = get_setting("notify_webhook")
+    if wh:
+        try:
+            data = json.dumps({"text": message, "content": message}).encode()
+            req = urllib.request.Request(
+                wh, data=data, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=15)
+            sent = True
+        except Exception:
+            try:  # some webhook targets (e.g. ntfy) prefer a plain body
+                urllib.request.urlopen(
+                    urllib.request.Request(wh, data=message.encode()), timeout=15)
+                sent = True
+            except Exception:
+                pass
+    email = get_setting("notify_email")
+    host = get_setting("smtp_host")
+    if email and host:
+        try:
+            msg = MIMEText(message)
+            msg["Subject"] = subject
+            msg["From"] = (get_setting("smtp_from") or get_setting("smtp_user")
+                           or "webbackup-panel@localhost")
+            msg["To"] = email
+            port = int(get_setting("smtp_port") or 587)
+            s = smtplib.SMTP(host, port, timeout=20)
+            try:
+                s.starttls()
+            except smtplib.SMTPException:
+                pass
+            user = get_setting("smtp_user")
+            if user:
+                s.login(user, get_setting("smtp_pass"))
+            s.sendmail(msg["From"], [email], msg.as_string())
+            s.quit()
+            sent = True
+        except Exception:
+            pass
+    return sent
+
+
+def monitor_loop():
+    """Panel-side watchdog: every 15 min read each server's last-run state;
+    on a NEW failure, send one central alert (webhook/email)."""
+    time.sleep(90)  # let the service settle after boot
+    while True:
+        try:
+            with db() as c:
+                rows = c.execute("SELECT * FROM servers").fetchall()
+            for r in rows:
+                try:
+                    client = sshops.connect(r["host"], r["port"], r["ssh_user"],
+                                            keyfile=CFG["SSH_KEY"], timeout=10)
+                    rc, out = sshops.run(
+                        client, "/usr/local/bin/webbackup laststate", timeout=20)
+                    client.close()
+                    out = out.strip()
+                    if rc != 0 or not out or out == "none":
+                        continue
+                    parts = out.split("|")
+                    st = parts[0]
+                    stamp = parts[1] if len(parts) > 1 else ""
+                    with db() as c:
+                        c.execute("UPDATE servers SET status=?, last_backup=?, "
+                                  "last_check=? WHERE id=?",
+                                  ("ok" if st == "ok" else "fail",
+                                   stamp, now(), r["id"]))
+                    if st != "ok" and stamp and r["notified_stamp"] != stamp:
+                        reason = parts[4] if len(parts) > 4 else "backup failed"
+                        notify_send(
+                            "❌ Backup FAILED on %s" % r["name"],
+                            "❌ Backup FAILED on %s (%s): %s\nPanel: check the "
+                            "server page for details." % (r["name"], stamp, reason))
+                        with db() as c:
+                            c.execute("UPDATE servers SET notified_stamp=? WHERE id=?",
+                                      (stamp, r["id"]))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        time.sleep(900)
+
+
 # ------------------------------------------------------------ job running ---
 def create_job(server_id, server_name, jtype):
     with db() as c:
@@ -197,6 +300,12 @@ def finish_job(job_id, ok):
     with db() as c:
         c.execute("UPDATE jobs SET status=?, finished=? WHERE id=?",
                   ("ok" if ok else "fail", now(), job_id))
+        row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    # immediate central alert when a backup-type job fails
+    if not ok and row and row["type"] in ("backup", "auto setup (after enroll)"):
+        notify_send("❌ %s failed on %s" % (row["type"], row["server_name"]),
+                    "❌ Job #%s (%s) FAILED on %s — open the panel job log for "
+                    "details." % (job_id, row["type"], row["server_name"]))
 
 
 def start_job(server_id, server_name, jtype, work):
@@ -694,6 +803,33 @@ def server_action(server_id):
             client.close()
             return True
         job_id = start_job(server_id, row["name"], "save config", work)
+    elif action == "restore_site":
+        snap = request.form.get("snapshot", "")
+        item = request.form.get("item", "")
+        if not SNAP_RE.fullmatch(snap) or not re.fullmatch(r"[A-Za-z0-9._\-]+\.tar\.gz", item):
+            abort(400)
+        job_id = start_job(server_id, row["name"], "restore website %s" % item,
+                           make("/usr/local/bin/webbackup restore-site %s %s"
+                                % (snap, sshops.shq(item)), 7200, False))
+    elif action == "restore_file":
+        snap = request.form.get("snapshot", "")
+        item = request.form.get("item", "")
+        fpath = request.form.get("fpath", "").strip().lstrip("/")
+        if (not SNAP_RE.fullmatch(snap)
+                or not re.fullmatch(r"[A-Za-z0-9._\-]+\.tar\.gz", item)
+                or not re.fullmatch(r"[A-Za-z0-9._/\-]+", fpath) or ".." in fpath):
+            abort(400)
+        job_id = start_job(server_id, row["name"], "restore file %s" % fpath,
+                           make("/usr/local/bin/webbackup restore-file %s %s %s"
+                                % (snap, sshops.shq(item), sshops.shq(fpath)), 3600, False))
+    elif action == "restore_db":
+        snap = request.form.get("snapshot", "")
+        dbname = request.form.get("db", "")
+        if not SNAP_RE.fullmatch(snap) or not re.fullmatch(r"[A-Za-z0-9_\-]+", dbname):
+            abort(400)
+        job_id = start_job(server_id, row["name"], "restore database %s" % dbname,
+                           make("/usr/local/bin/webbackup restore-db %s %s"
+                                % (snap, sshops.shq(dbname)), 7200, False))
     elif action == "delete_snapshot":
         snap = request.form.get("snapshot", "")
         if not SNAP_RE.fullmatch(snap):
@@ -878,7 +1014,7 @@ def job(job_id):
     return render_template("job.html", j=row)
 
 
-SECRET_SETTINGS = ("ts_authkey", "syno_pass")
+SECRET_SETTINGS = ("ts_authkey", "syno_pass", "smtp_pass")
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -970,27 +1106,41 @@ def snapshot_browse(server_id, snap):
     row = server_row(server_id)
     if not SNAP_RE.match(snap):
         abort(400)
-    files, error = [], ""
+    files, sites, dbs, error = [], [], [], ""
     try:
         host = server_hostname(row)
         nas = nas_connect()
-        sftp = nas.open_sftp()
-        base = "%s/%s/%s" % (get_setting("syno_path"), host, snap)
-
-        def walk(d, rel):
-            for e in sftp.listdir_attr(d):
-                p, r = d + "/" + e.filename, (rel + "/" + e.filename).lstrip("/")
-                if statmod.S_ISDIR(e.st_mode):
-                    walk(p, r)
-                else:
-                    files.append({"path": r, "size": human_bytes(e.st_size or 0)})
-        walk(base, "")
-        sftp.close()
+        base = "%s/%s/%s" % (get_setting("syno_path").rstrip("/"), host, snap)
+        # plain SSH (no SFTP service needed on the Synology)
+        script = ("cd %s && find . -type f | sed 's|^\\./||' | "
+                  "while IFS= read -r f; do "
+                  "printf '%%s\\t%%s\\n' \"$(wc -c < \"$f\" | tr -d ' ')\" \"$f\"; done"
+                  % sshops.shq(base))
+        rc, out = sshops.run(nas, script, timeout=120)
+        if rc != 0:
+            raise RuntimeError(out.strip() or "could not list the snapshot")
+        for line in out.splitlines():
+            if "\t" not in line:
+                continue
+            size, path = line.split("\t", 1)
+            entry = {"path": path, "size": human_bytes(int(size or 0))}
+            files.append(entry)
+            if (path.startswith("files/") and path.endswith(".tar.gz")):
+                sites.append(path[len("files/"):])
+        # databases inside the bundle
+        rc, out = sshops.run(nas, "tar -tf %s 2>/dev/null"
+                             % sshops.shq(base + "/databases/mysql_all_databases.tar"),
+                             timeout=60)
+        if rc == 0:
+            for m in out.split():
+                if m.startswith("mysql_") and m.endswith(".sql.gz"):
+                    dbs.append(m[len("mysql_"):-len(".sql.gz")])
         nas.close()
         files.sort(key=lambda f: f["path"])
     except Exception as exc:
         error = str(exc)
-    return render_template("snapshot.html", s=row, snap=snap, files=files, error=error)
+    return render_template("snapshot.html", s=row, snap=snap, files=files,
+                           sites=sorted(sites), dbs=sorted(dbs), error=error)
 
 
 @app.route("/servers/<int:server_id>/snapshots/<snap>/download")
@@ -1002,22 +1152,25 @@ def snapshot_download(server_id, snap):
         abort(400)
     host = server_hostname(row)
     nas = nas_connect()
-    sftp = nas.open_sftp()
-    remote = "%s/%s/%s/%s" % (get_setting("syno_path"), host, snap, fpath)
-    size = sftp.stat(remote).st_size
-    fh = sftp.open(remote, "rb")
-    fh.prefetch()
+    remote = "%s/%s/%s/%s" % (get_setting("syno_path").rstrip("/"), host, snap, fpath)
+    rc, out = sshops.run(nas, "wc -c < %s" % sshops.shq(remote), timeout=30)
+    if rc != 0:
+        nas.close()
+        abort(404)
+    size = int(out.strip() or 0)
+    # stream over plain SSH exec — no SFTP service required on the NAS
+    chan = nas.get_transport().open_session()
+    chan.exec_command("cat %s" % sshops.shq(remote))
 
     def gen():
         try:
             while True:
-                chunk = fh.read(65536)
+                chunk = chan.recv(65536)
                 if not chunk:
                     break
                 yield chunk
         finally:
-            fh.close()
-            sftp.close()
+            chan.close()
             nas.close()
 
     fname = os.path.basename(fpath)
@@ -1134,6 +1287,9 @@ def update_panel():
 
 # ------------------------------------------------------------------- main ---
 init_db()
+
+if not os.environ.get("WBD_NO_MONITOR"):
+    threading.Thread(target=monitor_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host=CFG["HOST"], port=int(CFG["PORT"]), threaded=True)
