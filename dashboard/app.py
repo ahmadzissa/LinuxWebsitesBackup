@@ -21,6 +21,7 @@ from functools import wraps
 from flask import (Flask, Response, abort, flash, g, redirect,
                    render_template, request, send_from_directory, session,
                    url_for)
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import sshops
@@ -49,6 +50,9 @@ if os.path.exists(CONFIG_PATH):
 app = Flask(__name__)
 app.secret_key = CFG["SECRET_KEY"]
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024  # update bundles
+# honor X-Forwarded-Proto/Host from the reverse proxy (CloudPanel nginx), so
+# generated URLs (enroll command) correctly say https:// and the right host
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 DEFAULT_SETTINGS = {
     "syno_host": "", "syno_port": "22", "syno_user": "",
@@ -321,14 +325,17 @@ command -v curl >/dev/null 2>&1 || {
 
 echo "[1/5] Downloading backup agent from the panel ..."
 mkdir -p /tmp/wb-agent
-curl -fsS "$PANEL/api/agent/webbackup?token=$TOKEN"  -o /tmp/wb-agent/webbackup
-curl -fsS "$PANEL/api/agent/install.sh?token=$TOKEN" -o /tmp/wb-agent/install.sh
+curl -fsSL "$PANEL/api/agent/webbackup?token=$TOKEN"  -o /tmp/wb-agent/webbackup
+curl -fsSL "$PANEL/api/agent/install.sh?token=$TOKEN" -o /tmp/wb-agent/install.sh
+head -c1 /tmp/wb-agent/webbackup | grep -q '#' || {
+  echo "Download check failed — got an HTML page instead of the agent."
+  echo "Make sure you used the exact command from the panel (https://...)."; exit 1; }
 
 echo "[2/5] Installing agent and dependencies ..."
 bash /tmp/wb-agent/install.sh < /dev/null
 
 echo "[3/5] Tailscale (private connection to the NAS) ..."
-TSKEY="$(curl -fsS "$PANEL/api/tskey?token=$TOKEN" 2>/dev/null || true)"
+TSKEY="$(curl -fsSL "$PANEL/api/tskey?token=$TOKEN" 2>/dev/null || true)"
 if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
   echo "      already installed and connected — keeping as is."
 elif [ -n "$TSKEY" ]; then
