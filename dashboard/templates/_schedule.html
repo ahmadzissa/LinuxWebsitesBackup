@@ -1,0 +1,32 @@
+{% macro schedule_fields() %}
+<div class="sched-builder">
+  <div class="row-fields">
+    <label>How often
+      <select name="sched_type" class="sched-type" onchange="schedTypeChanged(this)">
+        <option value="daily">Every day</option>
+        <option value="twice">Twice a day</option>
+        <option value="every6h">Every 6 hours</option>
+        <option value="hourly">Every hour</option>
+        <option value="weekly">Every week</option>
+        <option value="monthly">Every month</option>
+        <option value="custom">Custom (cron)</option>
+      </select></label>
+    <label class="sched-time">At time
+      <input type="time" name="sched_time" value="03:30"></label>
+    <label class="sched-dow" style="display:none">On day
+      <select name="sched_dow">
+        <option value="0">Sunday</option>
+        <option value="1">Monday</option>
+        <option value="2">Tuesday</option>
+        <option value="3">Wednesday</option>
+        <option value="4">Thursday</option>
+        <option value="5">Friday</option>
+        <option value="6">Saturday</option>
+      </select></label>
+    <label class="sched-dom" style="display:none">Day of month
+      <input type="number" name="sched_dom" min="1" max="28" value="1"></label>
+  </div>
+  <label class="sched-custom" style="display:none">Cron expression
+    <input name="cron" class="mono" placeholder="30 3 * * *"></label>
+</div>
+{% endmacro %}

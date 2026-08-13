@@ -78,7 +78,12 @@ pre.log {
 pre.log.small { font-size: 12px; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px 12px; }
 legend { font-weight: 700; padding: 0 6px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
+input[type=checkbox] { display: inline-block; width: auto; margin: 0 6px 0 0; vertical-align: middle; }
+.subcard { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px 14px; }
+.chk { display: flex; align-items: center; gap: 6px; font-weight: 700; margin: 0 0 8px; }
+.row-fields { display: flex; gap: 14px; flex-wrap: wrap; }
+.row-fields label { flex: 1; min-width: 110px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 22px; }
 @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
 code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
 </style>
@@ -99,5 +104,21 @@ code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 13p
 {% endwith %}
 {% block content %}{% endblock %}
 </main>
+<script>
+function schedTypeChanged(sel) {
+  var b = sel.closest('.sched-builder');
+  if (!b) return;
+  var t = sel.value;
+  function show(cls, on) {
+    var e = b.querySelector(cls);
+    if (e) e.style.display = on ? '' : 'none';
+  }
+  show('.sched-time', ['daily','twice','weekly','monthly'].indexOf(t) >= 0);
+  show('.sched-dow', t === 'weekly');
+  show('.sched-dom', t === 'monthly');
+  show('.sched-custom', t === 'custom');
+}
+document.querySelectorAll('.sched-type').forEach(function (s) { schedTypeChanged(s); });
+</script>
 </body>
 </html>

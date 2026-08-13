@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_schedule.html" import schedule_fields %}
 {% block title %}{{ s.name }}{% endblock %}
 {% block content %}
 <div class="row-head">
@@ -38,11 +39,7 @@
 <div class="card">
   <h2>Schedule</h2>
   <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
-    <label>Cron expression
-      <input name="cron" class="mono" placeholder="30 3 * * *" required></label>
-    <p class="hint"><code>30 3 * * *</code> daily 03:30 ·
-      <code>15 */6 * * *</code> every 6 h · <code>5 * * * *</code> hourly ·
-      <code>30 3 * * 0</code> weekly Sunday</p>
+    {{ schedule_fields() }}
     <button name="action" value="schedule">Set schedule on this server</button>
   </form>
 </div>
@@ -51,15 +48,18 @@
   <h2>Snapshots on the NAS</h2>
   {% if snapshots %}
   <table>
-    <tr><th>Snapshot</th><th></th></tr>
+    <tr><th>Snapshot</th><th></th><th></th></tr>
     {% for snap in snapshots %}
     <tr>
       <td class="mono">{{ snap }}</td>
       <td>
+        <a class="btn small" href="{{ url_for('snapshot_browse', server_id=s.id, snap=snap) }}">⬇ Browse &amp; download</a>
+      </td>
+      <td>
         <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
               onsubmit="return confirm('Download snapshot {{ snap }} to this server\'s /root/webbackup-restore/ folder? Nothing will be overwritten.')">
           <input type="hidden" name="snapshot" value="{{ snap }}">
-          <button name="action" value="restore" class="small">Restore (download)</button>
+          <button name="action" value="restore" class="small">Restore to server</button>
         </form>
       </td>
     </tr>

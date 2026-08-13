@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_schedule.html" import schedule_fields %}
 {% block title %}Servers{% endblock %}
 {% block content %}
 <div class="row-head">
@@ -24,22 +25,22 @@
 
 <div class="card">
   <h2>Push settings to selected servers</h2>
+  <p class="hint">Tick servers in the table above, choose what to apply, then push.</p>
   <div class="grid2">
-    <fieldset>
-      <legend><label><input type="checkbox" name="push_schedule" checked> Schedule</label></legend>
-      <label>Cron expression
-        <input name="cron" value="{{ settings.default_cron }}" class="mono">
-      </label>
-      <p class="hint">Examples: <code>30 3 * * *</code> daily 03:30 ·
-        <code>15 */6 * * *</code> every 6 h · <code>5 * * * *</code> hourly ·
-        <code>30 3 * * 0</code> weekly Sunday</p>
-    </fieldset>
-    <fieldset>
-      <legend><label><input type="checkbox" name="push_retention"> Retention</label></legend>
-      <label>Recent <input name="keep_daily" value="{{ settings.keep_daily }}" size="3"></label>
-      <label>Weekly <input name="keep_weekly" value="{{ settings.keep_weekly }}" size="3"></label>
-      <label>Monthly <input name="keep_monthly" value="{{ settings.keep_monthly }}" size="3"></label>
-    </fieldset>
+    <div class="subcard">
+      <label class="chk"><input type="checkbox" name="push_schedule" checked> Schedule</label>
+      {{ schedule_fields() }}
+      <p class="hint">Current default: <code>{{ settings.default_cron }}</code></p>
+    </div>
+    <div class="subcard">
+      <label class="chk"><input type="checkbox" name="push_retention" checked> Retention (snapshots to keep)</label>
+      <div class="row-fields">
+        <label>Recent <input name="keep_daily" value="{{ settings.keep_daily }}"></label>
+        <label>Weekly <input name="keep_weekly" value="{{ settings.keep_weekly }}"></label>
+        <label>Monthly <input name="keep_monthly" value="{{ settings.keep_monthly }}"></label>
+      </div>
+      <p class="hint">e.g. 8 recent + 4 weekly + 6 monthly ≈ restore points for ~6 months</p>
+    </div>
   </div>
   <button type="submit">Apply to selected servers</button>
 </div>

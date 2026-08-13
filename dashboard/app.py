@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import shutil
+import stat as statmod
 import sqlite3
 import subprocess
 import tarfile
@@ -258,6 +259,9 @@ BACKUP_CONFIGS="yes"
 KEEP_DAILY="{keep_daily}"
 KEEP_WEEKLY="{keep_weekly}"
 KEEP_MONTHLY="{keep_monthly}"
+
+NAS_RETRY_MIN="10"
+NAS_RETRY_HOURS="6"
 
 STAGING_DIR="/var/backups/webbackup"
 BWLIMIT="0"
@@ -604,13 +608,16 @@ def server_action(server_id):
             return rc == 0
         return work
 
-    if action == "complete":
+    if action == "backup":
+        # plain 'run' (not --cron) so queue/wait messages stream into this log;
+        # generous timeout to allow NAS-down queueing (up to 6h) + the backup
+        job_id = start_job(server_id, row["name"], "backup",
+                           make("/usr/local/bin/webbackup run && echo BACKUP-OK",
+                                timeout=10 * 3600))
+    elif action == "complete":
         nas_pass = request.form.get("nas_password", "") or get_setting("syno_pass")
         job_id = start_job(server_id, row["name"], "complete setup",
                            configure_server_work(row, nas_pass))
-    elif action == "backup":
-        job_id = start_job(server_id, row["name"], "backup",
-                           make("/usr/local/bin/webbackup run --cron && echo BACKUP-OK"))
     elif action == "test":
         job_id = start_job(server_id, row["name"], "test NAS connection",
                            make("/usr/local/bin/webbackup test", 120, False))
@@ -628,7 +635,7 @@ def server_action(server_id):
         job_id = start_job(server_id, row["name"], "restore " + snap,
                            make("/usr/local/bin/webbackup restore %s" % snap, 7200, False))
     elif action == "schedule":
-        cron = request.form.get("cron", "").strip()
+        cron = build_cron(request.form)
         if not valid_cron(cron):
             flash("Invalid cron expression.")
             return redirect(url_for("server", server_id=server_id))
@@ -666,6 +673,34 @@ def valid_cron(expr):
         re.fullmatch(r"[\d*,/-]+", f) for f in expr.split())
 
 
+def build_cron(form):
+    """Build a cron expression from the friendly schedule picker fields.
+    Falls back to the raw 'cron' field when type is custom."""
+    t = form.get("sched_type", "custom")
+    if t == "custom":
+        return form.get("cron", "").strip()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", form.get("sched_time") or "03:30")
+    hh, mm = (int(m.group(1)) % 24, int(m.group(2)) % 60) if m else (3, 30)
+    if t == "daily":
+        return "%d %d * * *" % (mm, hh)
+    if t == "twice":
+        return "%d %d,%d * * *" % (mm, hh, (hh + 12) % 24)
+    if t == "every6h":
+        return "15 */6 * * *"
+    if t == "hourly":
+        return "5 * * * *"
+    if t == "weekly":
+        dow = form.get("sched_dow", "0")
+        return "%d %d * * %s" % (mm, hh, dow if dow in tuple("0123456") else "0")
+    if t == "monthly":
+        try:
+            dom = max(1, min(28, int(form.get("sched_dom") or 1)))
+        except ValueError:
+            dom = 1
+        return "%d %d %d * *" % (mm, hh, dom)
+    return ""
+
+
 @app.route("/push", methods=["POST"])
 @login_required
 def push():
@@ -675,7 +710,7 @@ def push():
         flash("No servers selected.")
         return redirect(url_for("index"))
 
-    cron = request.form.get("cron", "").strip()
+    cron = build_cron(request.form)
     push_sched = bool(cron) and request.form.get("push_schedule")
     push_ret = request.form.get("push_retention")
     if push_sched and not valid_cron(cron):
@@ -786,6 +821,99 @@ def settings():
         pass
     return render_template("settings.html", s=vals, pubkey=pub, saved=saved,
                            ts_note=ts_note, ts_urgent=ts_urgent)
+
+
+# ------------------------------------------------- snapshot browse/download --
+SNAP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}$")
+RELPATH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
+
+
+def nas_connect():
+    pw = get_setting("syno_pass")
+    if not pw:
+        raise RuntimeError("save the NAS backup user password in Settings "
+                           "to enable browsing/downloading snapshots")
+    return sshops.connect(get_setting("syno_host"), get_setting("syno_port"),
+                          get_setting("syno_user"), password=pw)
+
+
+def server_hostname(row):
+    client = connect_server(row)
+    rc, out = sshops.run(client, "hostname", timeout=20)
+    client.close()
+    name = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if rc != 0 or not name:
+        raise RuntimeError("could not read the server's hostname")
+    return name
+
+
+def human_bytes(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return "%.1f %s" % (n, unit) if unit != "B" else "%d B" % n
+        n /= 1024.0
+
+
+@app.route("/servers/<int:server_id>/snapshots/<snap>")
+@login_required
+def snapshot_browse(server_id, snap):
+    row = server_row(server_id)
+    if not SNAP_RE.match(snap):
+        abort(400)
+    files, error = [], ""
+    try:
+        host = server_hostname(row)
+        nas = nas_connect()
+        sftp = nas.open_sftp()
+        base = "%s/%s/%s" % (get_setting("syno_path"), host, snap)
+
+        def walk(d, rel):
+            for e in sftp.listdir_attr(d):
+                p, r = d + "/" + e.filename, (rel + "/" + e.filename).lstrip("/")
+                if statmod.S_ISDIR(e.st_mode):
+                    walk(p, r)
+                else:
+                    files.append({"path": r, "size": human_bytes(e.st_size or 0)})
+        walk(base, "")
+        sftp.close()
+        nas.close()
+        files.sort(key=lambda f: f["path"])
+    except Exception as exc:
+        error = str(exc)
+    return render_template("snapshot.html", s=row, snap=snap, files=files, error=error)
+
+
+@app.route("/servers/<int:server_id>/snapshots/<snap>/download")
+@login_required
+def snapshot_download(server_id, snap):
+    row = server_row(server_id)
+    fpath = request.args.get("f", "")
+    if not SNAP_RE.match(snap) or not RELPATH_RE.match(fpath) or ".." in fpath:
+        abort(400)
+    host = server_hostname(row)
+    nas = nas_connect()
+    sftp = nas.open_sftp()
+    remote = "%s/%s/%s/%s" % (get_setting("syno_path"), host, snap, fpath)
+    size = sftp.stat(remote).st_size
+    fh = sftp.open(remote, "rb")
+    fh.prefetch()
+
+    def gen():
+        try:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            fh.close()
+            sftp.close()
+            nas.close()
+
+    fname = os.path.basename(fpath)
+    return Response(gen(), mimetype="application/octet-stream", headers={
+        "Content-Disposition": 'attachment; filename="%s"' % fname,
+        "Content-Length": str(size)})
 
 
 # ---------------------------------------------------------- panel updates ---

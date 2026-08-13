@@ -13,7 +13,12 @@
   <p>SSH into the web server and paste this as root. It downloads the backup
   agent <b>from this panel</b>, installs it, connects the server to the panel,
   and it appears on the Servers page automatically:</p>
-  <pre class="log">curl -fsSL {{ panel_url }}/enroll.sh | sudo bash -s -- {{ panel_url }} {{ token }}</pre>
+  <pre class="log" id="enroll-cmd">curl -fsSL {{ panel_url }}/enroll.sh | sudo bash -s -- {{ panel_url }} {{ token }}</pre>
+  <button type="button" id="copy-btn" onclick="
+    navigator.clipboard.writeText(document.getElementById('enroll-cmd').textContent.trim())
+      .then(function(){ var b=document.getElementById('copy-btn');
+        b.textContent='✔ Copied!'; setTimeout(function(){ b.textContent='📋 Copy command'; }, 2000); });
+  ">📋 Copy command</button>
   <p class="hint">
     If a Tailscale auth key is saved in <a href="{{ url_for('settings') }}">Settings</a>,
     this command also installs and connects Tailscale on the server

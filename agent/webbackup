@@ -24,7 +24,7 @@
 #
 set -u
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -54,6 +54,9 @@ BACKUP_CONFIGS="yes"           # /etc/nginx, apache, php, letsencrypt, cron...
 KEEP_DAILY="7"                 # most-recent snapshots to keep
 KEEP_WEEKLY="4"                # weekly snapshots to keep (0 = off)
 KEEP_MONTHLY="6"               # monthly snapshots to keep (0 = off)
+
+NAS_RETRY_MIN="10"             # NAS down at backup time: retry every N minutes
+NAS_RETRY_HOURS="6"            # ...for up to N hours (0 = fail immediately)
 
 STAGING_DIR="/var/backups/webbackup"   # local staging area
 BWLIMIT="0"                    # rsync bandwidth limit in KB/s (0 = unlimited)
@@ -139,6 +142,9 @@ BACKUP_CONFIGS="$BACKUP_CONFIGS"
 KEEP_DAILY="$KEEP_DAILY"
 KEEP_WEEKLY="$KEEP_WEEKLY"
 KEEP_MONTHLY="$KEEP_MONTHLY"
+
+NAS_RETRY_MIN="$NAS_RETRY_MIN"
+NAS_RETRY_HOURS="$NAS_RETRY_HOURS"
 
 STAGING_DIR="$STAGING_DIR"
 BWLIMIT="$BWLIMIT"
@@ -539,6 +545,10 @@ cmd_test() {
 }
 
 # ---------------------------------------------------------------------- run --
+nas_write_ok() {  # nas_write_ok <hostname> — NAS reachable AND folder writable
+    run_ssh "mkdir -p '$SYNO_PATH/$1' && touch '$SYNO_PATH/$1/.write-test' && rm -f '$SYNO_PATH/$1/.write-test' && echo NAS-OK" 2>/dev/null | grep -q NAS-OK
+}
+
 resolve_roots() {
     if [ "$WEB_ROOTS" = "auto" ]; then detect_webroots; else printf '%s\n' $WEB_ROOTS; fi
     [ -n "$EXTRA_DIRS" ] && printf '%s\n' $EXTRA_DIRS
@@ -563,6 +573,35 @@ cmd_run() {
     snap="$SYNO_PATH/$host/$stamp"
     staging="$STAGING_DIR/$stamp"
     t0=$(date +%s)
+
+    # NAS gate: never start building archives unless the NAS is reachable and
+    # writable. If it's down, QUEUE the backup: keep retrying every
+    # NAS_RETRY_MIN minutes for up to NAS_RETRY_HOURS, then run as soon as the
+    # NAS is back. The lock is held while waiting, so runs never pile up.
+    local waited=0 retry=$(( ${NAS_RETRY_MIN:-10} * 60 )) maxwait=$(( ${NAS_RETRY_HOURS:-6} * 3600 ))
+    [ "$retry" -ge 60 ] || retry=60
+    while ! nas_write_ok "$host"; do
+        if [ "$maxwait" -le 0 ] || [ "$waited" -ge "$maxwait" ]; then
+            mkdir -p "$STATE_DIR"
+            echo "fail|$stamp|0|0|NAS unreachable — gave up after $(( waited / 60 )) min" > "$STATE_DIR/last"
+            log ERROR "NAS $SYNO_HOST unreachable — gave up after $(( waited / 60 )) min"
+            notify fail "❌ Backup FAILED: $host — NAS $SYNO_HOST unreachable (waited $(( waited / 60 )) min)"
+            die "NAS $SYNO_HOST unreachable — gave up after $(( waited / 60 )) min. Run: webbackup test"
+        fi
+        if [ "$waited" -eq 0 ]; then
+            log WARN "NAS unreachable — backup QUEUED; retrying every $(( retry / 60 )) min for up to $(( maxwait / 3600 ))h"
+        fi
+        say "  NAS unreachable — backup queued, retrying in $(( retry / 60 )) min ($(( waited / 60 )) min waited so far)..."
+        sleep "$retry"
+        waited=$(( waited + retry ))
+    done
+    if [ "$waited" -gt 0 ]; then
+        log INFO "NAS back online after $(( waited / 60 )) min — starting queued backup"
+        say "  NAS is back — starting the queued backup now."
+        stamp="$(date +%F_%H%M)"
+        snap="$SYNO_PATH/$host/$stamp"
+        staging="$STAGING_DIR/$stamp"
+    fi
 
     log INFO "Backup started (snapshot $stamp)"
     [ "$cron_mode" = "--cron" ] || hdr "Backup $host → $SYNO_HOST  ($stamp)"
