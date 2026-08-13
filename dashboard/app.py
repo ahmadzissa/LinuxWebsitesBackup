@@ -652,7 +652,11 @@ def server_action(server_id):
             return True
         job_id = start_job(server_id, row["name"], "set schedule", work)
     elif action == "save_conf":
-        conf_text = request.form.get("conf", "")
+        # browsers submit textareas with Windows line endings — normalize,
+        # or bash on the server chokes on the \r characters
+        conf_text = request.form.get("conf", "").replace("\r\n", "\n").replace("\r", "\n")
+        if not conf_text.endswith("\n"):
+            conf_text += "\n"
         def work(append):
             client = connect_server(row)
             sshops.sftp_put_data(client, conf_text, "/etc/webbackup/webbackup.conf", 0o600)
