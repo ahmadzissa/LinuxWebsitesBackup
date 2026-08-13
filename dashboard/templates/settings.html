@@ -36,11 +36,19 @@
       limits how long you can enroll new servers with it, not the servers
       themselves — but still disable key expiry per machine afterwards).</p>
     <label>Tailscale auth key (starts with tskey-auth-…)
-      {% if saved.ts_authkey %}<span class="pill ok">✔ key saved</span>
-        {% if ts_note %}<span class="pill {{ 'fail' if ts_urgent else '' }}">{{ ts_note }}</span>{% endif %}
+      {% if saved.ts_authkey %}
+        {% if ts_invalid %}
+          <span class="pill fail">⚠ NOT a valid key — paste a real tskey-auth-… key</span>
+        {% else %}
+          <span class="pill ok">✔ key saved</span>
+          {% if ts_note %}<span class="pill {{ 'fail' if ts_urgent else '' }}">{{ ts_note }}</span>{% endif %}
+        {% endif %}
       {% endif %}
       <input name="ts_authkey" class="mono" autocomplete="off"
-             placeholder="{{ 'saved — paste a new key to replace, or the word clear to remove' if saved.ts_authkey else 'tskey-auth-xxxxxxxxxxxx' }}"></label>
+             placeholder="{{ 'paste a new key to replace the saved one, or the word clear to remove' if saved.ts_authkey else 'tskey-auth-xxxxxxxxxxxx' }}"></label>
+    {% if saved.ts_authkey %}
+    <p class="hint">Currently saved: <code class="mono">{{ ts_hint }}</code></p>
+    {% endif %}
     <label>Key expiry date (from the Tailscale dialog when you generated it)
       <input name="ts_expiry" type="date" value="{{ s.ts_expiry }}"></label>
     <h2>Defaults for newly linked servers</h2>

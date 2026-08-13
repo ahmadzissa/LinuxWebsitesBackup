@@ -805,6 +805,8 @@ def settings():
     vals = {k: get_setting(k) for k in DEFAULT_SETTINGS}
     # never render secrets back into the page — show a saved-flag instead
     saved = {k: bool(vals[k]) for k in SECRET_SETTINGS}
+    ts_invalid = bool(vals["ts_authkey"]) and not vals["ts_authkey"].startswith("tskey-")
+    ts_hint = vals["ts_authkey"]  # shown in full on the settings page
     for k in SECRET_SETTINGS:
         vals[k] = ""
     ts_note, ts_urgent = "", False
@@ -826,7 +828,8 @@ def settings():
     except OSError:
         pass
     return render_template("settings.html", s=vals, pubkey=pub, saved=saved,
-                           ts_note=ts_note, ts_urgent=ts_urgent)
+                           ts_note=ts_note, ts_urgent=ts_urgent,
+                           ts_invalid=ts_invalid, ts_hint=ts_hint)
 
 
 # ------------------------------------------------- snapshot browse/download --
