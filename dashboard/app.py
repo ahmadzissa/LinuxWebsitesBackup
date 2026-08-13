@@ -1151,6 +1151,56 @@ def snapshot_browse(server_id, snap):
                            dbs=sorted(set(dbs)), error=error)
 
 
+@app.route("/servers/<int:server_id>/snapshots/<snap>/dbdump/<dbname>")
+@login_required
+def snapshot_db_download(server_id, snap, dbname):
+    """Download one database dump — from a loose file or extracted on the
+    fly out of the mysql_all_databases.tar bundle."""
+    row = server_row(server_id)
+    if not SNAP_RE.fullmatch(snap) or not re.fullmatch(r"[A-Za-z0-9_\-]+", dbname):
+        abort(400)
+    host = server_hostname(row)
+    nas = nas_connect()
+    base = "%s/%s/%s" % (get_setting("syno_path").rstrip("/"), host, snap)
+    loose = "%s/databases/mysql_%s.sql.gz" % (base, dbname)
+    bundle = "%s/databases/mysql_all_databases.tar" % base
+    member = "mysql_%s.sql.gz" % dbname
+    size = None
+    rc, out = sshops.run(nas, "wc -c < %s" % sshops.shq(loose), timeout=30)
+    if rc == 0:
+        size = int(out.strip() or 0)
+        cmd = "cat %s" % sshops.shq(loose)
+    else:
+        rc, out = sshops.run(nas, "tar -tvf %s %s 2>/dev/null"
+                             % (sshops.shq(bundle), sshops.shq(member)), timeout=60)
+        if rc != 0 or not out.strip():
+            nas.close()
+            abort(404)
+        try:
+            size = int(out.split()[2])
+        except (IndexError, ValueError):
+            size = None
+        cmd = "tar -xOf %s %s" % (sshops.shq(bundle), sshops.shq(member))
+    chan = nas.get_transport().open_session()
+    chan.exec_command(cmd)
+
+    def gen():
+        try:
+            while True:
+                chunk = chan.recv(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            chan.close()
+            nas.close()
+
+    headers = {"Content-Disposition": 'attachment; filename="%s"' % member}
+    if size:
+        headers["Content-Length"] = str(size)
+    return Response(gen(), mimetype="application/octet-stream", headers=headers)
+
+
 @app.route("/servers/<int:server_id>/snapshots/<snap>/download")
 @login_required
 def snapshot_download(server_id, snap):

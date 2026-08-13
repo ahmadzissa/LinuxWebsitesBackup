@@ -44,10 +44,12 @@
     snapshot version — website files and other databases are not touched.
     Restore a site's files AND its database = use both buttons.</p>
   <table>
-    <tr><th>Database</th><th></th></tr>
+    <tr><th>Database</th><th></th><th></th></tr>
     {% for db in dbs %}
     <tr>
       <td class="mono">{{ db }}</td>
+      <td><a class="btn small"
+             href="{{ url_for('snapshot_db_download', server_id=s.id, snap=snap, dbname=db) }}">⬇ Download</a></td>
       <td>
         <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
               onsubmit="return confirm('Restore database {{ db }} from {{ snap }}? Its current content will be replaced.')
@@ -59,7 +61,7 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="2">No database dumps in this snapshot.</td></tr>
+    <tr><td colspan="3">No database dumps in this snapshot.</td></tr>
     {% endfor %}
   </table>
 </div>
