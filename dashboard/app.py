@@ -419,10 +419,16 @@ def api_enroll():
     if not ip:
         return "no ip supplied", 400
     with db() as c:
-        row = c.execute("SELECT id FROM servers WHERE host=?", (ip,)).fetchone()
+        # match by IP OR hostname, so a server that re-enrolls with a new IP
+        # (e.g. after joining Tailscale) updates its row instead of duplicating
+        if hostname:
+            row = c.execute("SELECT id FROM servers WHERE host=? OR name=?",
+                            (ip, hostname)).fetchone()
+        else:
+            row = c.execute("SELECT id FROM servers WHERE host=?", (ip,)).fetchone()
         if row:
-            c.execute("UPDATE servers SET name=?, port=?, status='enrolled' WHERE id=?",
-                      (hostname or ip, port, row["id"]))
+            c.execute("UPDATE servers SET name=?, host=?, port=? WHERE id=?",
+                      (hostname or ip, ip, port, row["id"]))
         else:
             c.execute("INSERT INTO servers(name,host,port,ssh_user,created,status) "
                       "VALUES(?,?,?,?,?,'enrolled')",
