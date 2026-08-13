@@ -53,6 +53,7 @@ app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024  # update bundles
 DEFAULT_SETTINGS = {
     "syno_host": "", "syno_port": "22", "syno_user": "",
     "syno_path": "/volume1/WebBackups",
+    "syno_pass": "",
     "default_cron": "30 3 * * *",
     "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
     "ts_authkey": "",
@@ -138,7 +139,8 @@ def login():
     if request.method == "POST":
         cnt, until = FAILED.get(ip, [0, 0])
         if time.time() < until:
-            flash("Too many attempts — try again in a minute.")
+            wait = int((until - time.time()) / 60) + 1
+            flash("Too many attempts — try again in %d minute(s)." % wait)
             return render_template("login.html")
         u = request.form.get("username", "")
         p = request.form.get("password", "")
@@ -149,8 +151,11 @@ def login():
             FAILED.pop(ip, None)
             return redirect(request.args.get("next") or url_for("index"))
         cnt += 1
-        FAILED[ip] = [cnt, time.time() + 60 if cnt >= 5 else 0]
-        flash("Wrong username or password.")
+        FAILED[ip] = [cnt, time.time() + 300 if cnt >= 5 else 0]  # 5 fails → 5 min
+        if cnt >= 5:
+            flash("Wrong username or password. Too many attempts — locked for 5 minutes.")
+        else:
+            flash("Wrong username or password.")
     return render_template("login.html")
 
 
@@ -540,10 +545,11 @@ def add_server():
     if request.method == "POST":
         f = request.form
         name = f.get("name") or f.get("host")
+        nas_pass = f.get("nas_password", "") or get_setting("syno_pass")
         job_id = start_job(None, name, "link server",
                            link_server_work(name, f["host"], int(f.get("port") or 22),
                                             f.get("ssh_user") or "root",
-                                            f["password"], f.get("nas_password", "")))
+                                            f["password"], nas_pass))
         return redirect(url_for("job", job_id=job_id))
     nas_ready = bool(get_setting("syno_host") and get_setting("syno_user"))
     panel_url = request.host_url.rstrip("/")
@@ -590,8 +596,9 @@ def server_action(server_id):
         return work
 
     if action == "complete":
+        nas_pass = request.form.get("nas_password", "") or get_setting("syno_pass")
         job_id = start_job(server_id, row["name"], "complete setup",
-                           configure_server_work(row, request.form.get("nas_password", "")))
+                           configure_server_work(row, nas_pass))
     elif action == "backup":
         job_id = start_job(server_id, row["name"], "backup",
                            make("/usr/local/bin/webbackup run --cron && echo BACKUP-OK"))

@@ -18,7 +18,13 @@
         <input name="syno_user" value="{{ s.syno_user }}"></label>
       <label>Backup folder on NAS
         <input name="syno_path" value="{{ s.syno_path }}" class="mono"></label>
+      <label>NAS backup user password (optional)
+        <input name="syno_pass" type="password" value="{{ s.syno_pass }}"></label>
     </div>
+    <p class="hint">If saved, it's used automatically when linking servers and in
+      "Complete setup" — no more typing it per server. Leave empty if you prefer
+      to enter it each time (slightly safer: nothing NAS-related stored on the
+      panel).</p>
     <h2>Tailscale auto-setup (optional but recommended)</h2>
     <p class="hint">Paste a Tailscale <b>auth key</b> here and the enroll
       command will install + connect Tailscale on every new server
