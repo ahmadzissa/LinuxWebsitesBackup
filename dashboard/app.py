@@ -57,6 +57,7 @@ DEFAULT_SETTINGS = {
     "default_cron": "30 3 * * *",
     "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
     "ts_authkey": "",
+    "repo_dir": "",
 }
 
 # --------------------------------------------------------------------- db ---
@@ -753,6 +754,72 @@ def settings():
 
 
 # ---------------------------------------------------------- panel updates ---
+def apply_update_from(root):
+    """Copy panel + agent files from an extracted/checked-out project root.
+    Raises on problems; config/db/keys are never touched."""
+    if not os.path.isfile(os.path.join(root, "dashboard", "app.py")):
+        raise ValueError("no dashboard/app.py found in " + root)
+    app_dir = CFG.get("APP_DIR") or os.path.dirname(os.path.abspath(__file__))
+    dsrc = os.path.join(root, "dashboard")
+    for name in ("app.py", "sshops.py", "requirements.txt"):
+        src = os.path.join(dsrc, name)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(app_dir, name))
+    for dname in ("templates", "static"):
+        src = os.path.join(dsrc, dname)
+        if os.path.isdir(src):
+            dst = os.path.join(app_dir, dname)
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+    asrc = os.path.join(root, "agent")
+    if os.path.isdir(asrc):
+        os.makedirs(CFG["AGENT_DIR"], exist_ok=True)
+        for name in ("webbackup", "install.sh"):
+            src = os.path.join(asrc, name)
+            if os.path.isfile(src):
+                dst = os.path.join(CFG["AGENT_DIR"], name)
+                shutil.copy2(src, dst)
+                os.chmod(dst, 0o755)
+    pip = os.path.join(app_dir, "venv", "bin", "pip")
+    req = os.path.join(app_dir, "requirements.txt")
+    if os.path.isfile(pip) and os.path.isfile(req):
+        subprocess.run([pip, "install", "-q", "-r", req], timeout=300, check=False)
+
+
+def restart_and_confirm(extra=""):
+    if not os.environ.get("WBD_NO_RESTART"):
+        subprocess.Popen(["bash", "-c", "sleep 1; systemctl restart webbackup-dashboard"],
+                         start_new_session=True)
+    return ("<!doctype html><meta http-equiv='refresh' content='7;url=/'>"
+            "<body style='font-family:system-ui;padding:48px;background:#f4f6f9'>"
+            "<h2>✔ Update installed — the panel is restarting…</h2>"
+            + ("<pre style='background:#17212b;color:#d9e2ec;padding:14px;"
+               "border-radius:8px'>%s</pre>" % extra if extra else "") +
+            "<p>This page reloads automatically in a few seconds. "
+            "If it doesn't, <a href='/'>click here</a> and hard-refresh (Ctrl+F5).</p>"
+            "</body>")
+
+
+@app.route("/update/local", methods=["POST"])
+@login_required
+def update_from_local():
+    """One click: apply the project files already uploaded to this server
+    (via PhpStorm/SFTP/git — however they got there), then restart."""
+    folder = request.form.get("repo_dir", "").strip() or get_setting("repo_dir")
+    if folder:
+        set_setting("repo_dir", folder)
+    if not folder or not os.path.isdir(folder):
+        flash("Set the project folder first (where you upload the files on "
+              "this server).")
+        return redirect(url_for("settings"))
+    try:
+        apply_update_from(folder)
+    except Exception as exc:
+        flash("Update failed, nothing was restarted: %s" % exc)
+        return redirect(url_for("settings"))
+    return restart_and_confirm("Applied files from: " + folder)
+
+
 @app.route("/update", methods=["POST"])
 @login_required
 def update_panel():
@@ -783,47 +850,13 @@ def update_panel():
         if not root:
             raise ValueError("this file does not contain dashboard/app.py — "
                              "upload the full LinuxWebsitesBackup.tar.gz")
-        app_dir = CFG.get("APP_DIR") or os.path.dirname(os.path.abspath(__file__))
-        dsrc = os.path.join(root, "dashboard")
-        for name in ("app.py", "sshops.py", "requirements.txt"):
-            src = os.path.join(dsrc, name)
-            if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(app_dir, name))
-        for dname in ("templates", "static"):
-            src = os.path.join(dsrc, dname)
-            if os.path.isdir(src):
-                dst = os.path.join(app_dir, dname)
-                shutil.rmtree(dst, ignore_errors=True)
-                shutil.copytree(src, dst)
-        asrc = os.path.join(root, "agent")
-        if os.path.isdir(asrc):
-            os.makedirs(CFG["AGENT_DIR"], exist_ok=True)
-            for name in ("webbackup", "install.sh"):
-                src = os.path.join(asrc, name)
-                if os.path.isfile(src):
-                    dst = os.path.join(CFG["AGENT_DIR"], name)
-                    shutil.copy2(src, dst)
-                    os.chmod(dst, 0o755)
-        # best-effort: install any new python dependencies
-        pip = os.path.join(app_dir, "venv", "bin", "pip")
-        req = os.path.join(app_dir, "requirements.txt")
-        if os.path.isfile(pip) and os.path.isfile(req):
-            subprocess.run([pip, "install", "-q", "-r", req],
-                           timeout=300, check=False)
+        apply_update_from(root)
     except Exception as exc:
         shutil.rmtree(tmp, ignore_errors=True)
         flash("Update failed, nothing was restarted: %s" % exc)
         return redirect(url_for("settings"))
     shutil.rmtree(tmp, ignore_errors=True)
-    if not os.environ.get("WBD_NO_RESTART"):
-        subprocess.Popen(["bash", "-c", "sleep 1; systemctl restart webbackup-dashboard"],
-                         start_new_session=True)
-    return ("<!doctype html><meta http-equiv='refresh' content='7;url=/'>"
-            "<body style='font-family:system-ui;padding:48px;background:#f4f6f9'>"
-            "<h2>✔ Update installed — the panel is restarting…</h2>"
-            "<p>This page reloads automatically in a few seconds. "
-            "If it doesn't, <a href='/'>click here</a> and hard-refresh (Ctrl+F5).</p>"
-            "</body>")
+    return restart_and_confirm()
 
 
 # ------------------------------------------------------------------- main ---

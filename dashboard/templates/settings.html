@@ -53,15 +53,25 @@
 
 <div class="card">
   <h2>Install an update</h2>
-  <p class="hint">Upload a new <code>LinuxWebsitesBackup.tar.gz</code> bundle
-    and the panel updates itself — no SSH needed. Your settings, servers,
-    login and keys are kept. The panel restarts automatically (a few seconds
-    of downtime).</p>
+  <p class="hint"><b>One click:</b> upload the changed project files to the
+    folder below however you like (PhpStorm, SFTP, git…), then press the
+    button — the panel applies them and restarts itself. Settings, servers,
+    login and keys are always kept.</p>
+  <form method="post" action="{{ url_for('update_from_local') }}"
+        onsubmit="return confirm('Apply the files from the project folder and restart the panel?')">
+    <label>Project folder on this server
+      <input name="repo_dir" value="{{ s.repo_dir }}" class="mono"
+             placeholder="/home/serverbackup/htdocs/serverbackup.areviewsapp.com"></label>
+    <button type="submit">⟳ Apply update now</button>
+  </form>
+  <hr style="border:none;border-top:1px solid #dde4ec;margin:16px 0">
+  <p class="hint"><b>Or upload a bundle:</b> a full
+    <code>LinuxWebsitesBackup.tar.gz</code> file.</p>
   <form method="post" action="{{ url_for('update_panel') }}"
         enctype="multipart/form-data"
         onsubmit="return confirm('Install this update and restart the panel?')">
     <label>Update bundle (.tar.gz)
-      <input type="file" name="package" accept=".gz,.tgz" required></label>
+      <input type="file" name="package" accept=".gz,.tgz"></label>
     <button type="submit">Upload &amp; install update</button>
   </form>
 </div>
