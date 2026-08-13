@@ -24,7 +24,7 @@
 #
 set -u
 
-VERSION="1.3.0"
+VERSION="1.3.3"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -264,6 +264,66 @@ mysql_available() {
     $(mysql_cmd) -N -e "SELECT 1" >/dev/null 2>&1
 }
 
+# If MySQL isn't reachable and this is a CloudPanel server, fetch the master
+# credentials from clpctl automatically and store them for the agent.
+find_clpctl() {
+    local c
+    command -v clpctl >/dev/null 2>&1 && { echo "clpctl"; return 0; }
+    # clpctl is usually only an interactive-shell alias — try the real binary
+    for c in /usr/local/bin/clpctl /usr/bin/clpctl /home/clp/htdocs/app/bin/clpctl; do
+        [ -x "$c" ] && { echo "$c"; return 0; }
+    done
+    return 1
+}
+
+ensure_mysql_creds() {
+    mysql_available && return 0
+    local clp out="" cc user="" pass="" host="" port=""
+    clp="$(find_clpctl)" || clp=""
+    [ -n "$clp" ] && out="$("$clp" db:show:master-credentials 2>/dev/null)"
+    # Preferred: parse the "Connect Command: mysql -h'..' -P'..' -u'..' -p'..'" line
+    cc="$(printf '%s\n' "$out" | grep -i 'connect command' | head -n1)"
+    if [ -n "$cc" ]; then
+        host="$(printf '%s' "$cc" | sed -n "s/.*-h'\([^']*\)'.*/\1/p")"
+        port="$(printf '%s' "$cc" | sed -n "s/.*-P'\([^']*\)'.*/\1/p")"
+        user="$(printf '%s' "$cc" | sed -n "s/.*-u'\([^']*\)'.*/\1/p")"
+        pass="$(printf '%s' "$cc" | sed -n "s/.*-p'\([^']*\)'.*/\1/p")"
+    fi
+    # Fallback: parse the "| Key | Value |" table
+    if [ -z "$pass" ]; then
+        user="$(printf '%s\n' "$out" | awk -F'|' 'tolower($2) ~ /user/     {gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3; exit}')"
+        pass="$(printf '%s\n' "$out" | awk -F'|' 'tolower($2) ~ /password/ {gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3; exit}')"
+        host="$(printf '%s\n' "$out" | awk -F'|' 'tolower($2) ~ /host/     {gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3; exit}')"
+        port="$(printf '%s\n' "$out" | awk -F'|' 'tolower($2) ~ /port/     {gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3; exit}')"
+    fi
+    # Last resort: plain "Key: Value" lines
+    if [ -z "$pass" ] && [ -n "$out" ]; then
+        user="$(printf '%s\n' "$out" | awk -F': *' 'tolower($1) ~ /user/     {gsub(/[[:space:]]+$/,"",$2); print $2; exit}')"
+        pass="$(printf '%s\n' "$out" | awk -F': *' 'tolower($1) ~ /password/ {gsub(/[[:space:]]+$/,"",$2); print $2; exit}')"
+    fi
+    # HestiaCP: root credentials live in /usr/local/hestia/conf/mysql.conf
+    if [ -z "$pass" ] && [ -f /usr/local/hestia/conf/mysql.conf ]; then
+        local hconf=/usr/local/hestia/conf/mysql.conf
+        user="$(sed -n "s/.*USER='\([^']*\)'.*/\1/p" "$hconf" | head -n1)"
+        pass="$(sed -n "s/.*PASSWORD='\([^']*\)'.*/\1/p" "$hconf" | head -n1)"
+        host="$(sed -n "s/.*HOST='\([^']*\)'.*/\1/p" "$hconf" | head -n1)"
+        port="$(sed -n "s/.*PORT='\([^']*\)'.*/\1/p" "$hconf" | head -n1)"
+        [ "$host" = "localhost" ] && host="localhost" || true
+    fi
+    [ -n "$pass" ] || return 1
+    mkdir -p "$CONFIG_DIR"
+    {
+        echo "[client]"
+        echo "user=${user:-root}"
+        echo "password=$pass"
+        [ -n "$host" ] && echo "host=$host"
+        [ -n "$port" ] && echo "port=$port"
+    } > "$DB_CNF"
+    chmod 600 "$DB_CNF"
+    log INFO "MySQL credentials auto-detected from CloudPanel (clpctl)"
+    mysql_available
+}
+
 detect_mysql_dbs() {
     $(mysql_cmd) -N -e "SHOW DATABASES" 2>/dev/null \
         | grep -Ev '^(information_schema|performance_schema|sys|mysql)$'
@@ -313,6 +373,7 @@ cmd_detect() {
 
     say ""
     say "${C_BLD}MySQL/MariaDB:${C_OFF}"
+    ensure_mysql_creds >/dev/null 2>&1 || true
     if mysql_available; then
         detect_mysql_dbs | sed 's/^/  • /'
     else
@@ -624,6 +685,7 @@ cmd_run() {
     fi
 
     # -- MySQL / MariaDB
+    [ "$BACKUP_MYSQL" != no ] && ensure_mysql_creds >/dev/null 2>&1 || true
     if [ "$BACKUP_MYSQL" = yes ] || { [ "$BACKUP_MYSQL" = auto ] && mysql_available; }; then
         if mysql_available; then
             local dbs db
