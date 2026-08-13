@@ -1127,6 +1127,9 @@ def snapshot_browse(server_id, snap):
             files.append(entry)
             if (path.startswith("files/") and path.endswith(".tar.gz")):
                 sites.append(path[len("files/"):])
+            # older snapshots: loose per-database dumps
+            if (path.startswith("databases/mysql_") and path.endswith(".sql.gz")):
+                dbs.append(path[len("databases/mysql_"):-len(".sql.gz")])
         # databases inside the bundle
         rc, out = sshops.run(nas, "tar -tf %s 2>/dev/null"
                              % sshops.shq(base + "/databases/mysql_all_databases.tar"),
@@ -1137,10 +1140,15 @@ def snapshot_browse(server_id, snap):
                     dbs.append(m[len("mysql_"):-len(".sql.gz")])
         nas.close()
         files.sort(key=lambda f: f["path"])
+        others = [f for f in files
+                  if not f["path"].startswith(("files/", "databases/mysql_"))
+                  or f["path"] == "databases/mysql_all_databases.tar"]
     except Exception as exc:
         error = str(exc)
+        others = []
     return render_template("snapshot.html", s=row, snap=snap, files=files,
-                           sites=sorted(sites), dbs=sorted(dbs), error=error)
+                           others=others, sites=sorted(sites),
+                           dbs=sorted(set(dbs)), error=error)
 
 
 @app.route("/servers/<int:server_id>/snapshots/<snap>/download")

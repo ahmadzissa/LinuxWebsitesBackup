@@ -24,7 +24,7 @@
 #
 set -u
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -955,10 +955,16 @@ cmd_restore_db() {  # webbackup restore-db <snapshot> <database>
     host="$(hostname)"; tmp="/tmp/webbackup-item"
     [ -n "$snap" ] && [ -n "$db" ] || die "usage: webbackup restore-db <snapshot> <database>"
     rm -rf "$tmp"; mkdir -p "$tmp"
-    say "Fetching database bundle from snapshot $snap ..."
-    rsync_down "$SYNO_PATH/$host/$snap/databases/mysql_all_databases.tar" "$tmp/" || die "download failed"
-    tar -xf "$tmp/mysql_all_databases.tar" -C "$tmp" "mysql_$db.sql.gz" 2>/dev/null || \
-        die "database '$db' not found in this snapshot"
+    say "Fetching database dump from snapshot $snap ..."
+    if rsync_down "$SYNO_PATH/$host/$snap/databases/mysql_all_databases.tar" "$tmp/" 2>/dev/null; then
+        tar -xf "$tmp/mysql_all_databases.tar" -C "$tmp" "mysql_$db.sql.gz" 2>/dev/null || \
+            die "database '$db' not found in this snapshot"
+    else
+        # older snapshots store loose per-database dumps
+        rsync_down "$SYNO_PATH/$host/$snap/databases/mysql_$db.sql.gz" "$tmp/" 2>/dev/null || \
+            die "database '$db' not found in this snapshot"
+    fi
+    [ -f "$tmp/mysql_$db.sql.gz" ] || die "database '$db' not found in this snapshot"
     ensure_mysql_creds >/dev/null 2>&1 || true
     mysql_available || die "cannot connect to MySQL"
     $(mysql_cmd) -e "CREATE DATABASE IF NOT EXISTS \`$db\`"
