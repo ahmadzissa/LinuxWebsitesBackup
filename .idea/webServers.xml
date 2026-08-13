@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="a9e08e5b-4813-4026-a13e-55c8ac59c14f" name="serverBackup">
+        <fileTransfer rootFolder="/home/serverbackup/htdocs/serverbackup.areviewsapp.com" accessType="SFTP" host="68.183.176.239" port="22" sshConfigId="e24bc023-502d-4320-8f8e-6c927a3582fd" sshConfig="serverBackup" keyPair="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

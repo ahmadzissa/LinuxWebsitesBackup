@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig host="68.183.176.239" id="e24bc023-502d-4320-8f8e-6c927a3582fd" keyPath="C:\Users\ahmad\.ssh\ServerBackup.ppk" port="22" customName="serverBackup" nameFormat="CUSTOM" username="serverbackup" useOpenSSHConfig="true">
+        <option name="customName" value="serverBackup" />
+      </sshConfig>
+    </configs>
+  </component>
+</project>
