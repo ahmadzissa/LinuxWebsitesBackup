@@ -792,6 +792,12 @@ def settings():
                         continue            # empty = keep the saved secret
                     if v.lower() == "clear":
                         v = ""              # the word 'clear' removes it
+                if k == "ts_authkey" and v and not v.startswith("tskey-"):
+                    # reject junk (e.g. browser autofill injecting a username)
+                    flash("Tailscale key NOT saved: a valid key starts with "
+                          "'tskey-' but the field contained something else "
+                          "(probably autofill). The previously saved key was kept.")
+                    continue
                 set_setting(k, v)
         flash("Settings saved. They apply to newly linked servers; use the "
               "push panel on the home page to update existing servers.")
