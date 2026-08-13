@@ -31,6 +31,8 @@
     <button name="action" value="backup">▶ Backup now</button>
     <button name="action" value="test">Test NAS connection</button>
     <button name="action" value="refresh">Refresh status</button>
+    <button name="action" value="clear_restore"
+            onclick="return confirm('Delete all downloaded restore files (/root/webbackup-restore) on this server? Backups on the NAS are not affected.')">🧹 Clear restore files</button>
   </form>
   <p class="hint">Last backup: <b>{{ s.last_backup or 'never' }}</b> ·
      last checked: {{ s.last_check or 'never' }}</p>

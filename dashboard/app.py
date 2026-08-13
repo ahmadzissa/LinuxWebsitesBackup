@@ -373,6 +373,7 @@ KEEP_MONTHLY="{keep_monthly}"
 
 NAS_RETRY_MIN="10"
 NAS_RETRY_HOURS="6"
+RESTORE_KEEP_DAYS="3"
 
 STAGING_DIR="/var/backups/webbackup"
 BWLIMIT="0"
@@ -764,6 +765,9 @@ def server_action(server_id):
     elif action == "test":
         job_id = start_job(server_id, row["name"], "test NAS connection",
                            make("/usr/local/bin/webbackup test", 120, False))
+    elif action == "clear_restore":
+        job_id = start_job(server_id, row["name"], "clear restore files",
+                           make("/usr/local/bin/webbackup clear-restore", 300, False))
     elif action == "refresh":
         def work(append):
             client = connect_server(row)

@@ -24,7 +24,7 @@
 #
 set -u
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -57,6 +57,7 @@ KEEP_MONTHLY="6"               # monthly snapshots to keep (0 = off)
 
 NAS_RETRY_MIN="10"             # NAS down at backup time: retry every N minutes
 NAS_RETRY_HOURS="6"            # ...for up to N hours (0 = fail immediately)
+RESTORE_KEEP_DAYS="3"          # auto-delete /root/webbackup-restore after N days
 
 STAGING_DIR="/var/backups/webbackup"   # local staging area
 BWLIMIT="0"                    # rsync bandwidth limit in KB/s (0 = unlimited)
@@ -145,6 +146,7 @@ KEEP_MONTHLY="$KEEP_MONTHLY"
 
 NAS_RETRY_MIN="$NAS_RETRY_MIN"
 NAS_RETRY_HOURS="$NAS_RETRY_HOURS"
+RESTORE_KEEP_DAYS="$RESTORE_KEEP_DAYS"
 
 STAGING_DIR="$STAGING_DIR"
 BWLIMIT="$BWLIMIT"
@@ -793,6 +795,10 @@ cmd_run() {
     #    the next run rebuilds everything fresh)
     rm -rf "$staging"
     find "$STAGING_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null
+    # -- auto-clean old restore downloads
+    if [ "${RESTORE_KEEP_DAYS:-3}" -gt 0 ] 2>/dev/null; then
+        find /root/webbackup-restore -mindepth 1 -maxdepth 1 -mtime "+${RESTORE_KEEP_DAYS:-3}" -exec rm -rf {} + 2>/dev/null
+    fi
 
     local dt=$(( $(date +%s) - t0 ))
     mkdir -p "$STATE_DIR"
@@ -1127,6 +1133,11 @@ case "${1:-menu}" in
     restore-site) cmd_restore_site "${2:-}" "${3:-}" ;;
     restore-db)   cmd_restore_db "${2:-}" "${3:-}" ;;
     restore-file) cmd_restore_file "${2:-}" "${3:-}" "${4:-}" ;;
+    clear-restore)
+        freed="$(du -sh /root/webbackup-restore 2>/dev/null | cut -f1)"
+        rm -rf /root/webbackup-restore /tmp/webbackup-item /tmp/wb-agent
+        echo "✔ Restore/download leftovers cleared${freed:+ (freed $freed)}."
+        ;;
     schedule)  cmd_schedule ;;
     status)    cmd_status ;;
     config)    cmd_config ;;
