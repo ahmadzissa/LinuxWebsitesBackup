@@ -24,7 +24,7 @@
 #
 set -u
 
-VERSION="1.3.3"
+VERSION="1.4.0"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -719,6 +719,19 @@ cmd_run() {
         fi
     fi
 
+    # -- bundle the per-database dumps into one archive per engine
+    #    (each database stays a separate .sql.gz inside the bundle)
+    if ls "$staging/databases"/mysql_*.sql.gz >/dev/null 2>&1; then
+        ( cd "$staging/databases" && \
+          tar -cf mysql_all_databases.tar mysql_*.sql.gz && \
+          rm -f mysql_*.sql.gz )
+    fi
+    if ls "$staging/databases"/pgsql_*.sql.gz >/dev/null 2>&1; then
+        ( cd "$staging/databases" && \
+          tar -cf pgsql_all_databases.tar pgsql_*.sql.gz && \
+          rm -f pgsql_*.sql.gz )
+    fi
+
     # -- configs
     if [ "$BACKUP_CONFIGS" = yes ]; then
         [ "$cron_mode" = "--cron" ] || say "  archiving server configs ..."
@@ -884,7 +897,8 @@ cmd_restore() {
     say "To restore website files:   extract the archives from $dest/files/ into the"
     say "  ORIGINAL PARENT directory (each archive contains its top-level folder):"
     say "  e.g.  var_www.tar.gz holds 'www/'  →  tar -xzf $dest/files/var_www.tar.gz -C /var/"
-    say "To restore a MySQL db:      gunzip < $dest/databases/mysql_DBNAME.sql.gz | mysql DBNAME"
+    say "To restore a MySQL db:      tar -xf $dest/databases/mysql_all_databases.tar -C $dest/databases/"
+    say "                            gunzip < $dest/databases/mysql_DBNAME.sql.gz | mysql DBNAME"
     say "To restore configs:         extract $dest/configs/etc-configs.tar.gz carefully (paths are absolute-relative)"
     say ""
     warn "Nothing was overwritten automatically — restores are manual on purpose."
