@@ -51,6 +51,20 @@
     {% endif %}
     <label>Key expiry date (from the Tailscale dialog when you generated it)
       <input name="ts_expiry" type="date" value="{{ s.ts_expiry }}"></label>
+    <h2>Notifications on backup failure</h2>
+    <p class="hint">Applied to newly linked servers (use the push panel on the
+      home page for existing ones). Webhook works out of the box (Discord,
+      Slack, ntfy.sh…). Email additionally requires a <code>mail</code> command
+      on each server (e.g. <code>apt install mailutils</code>) — if unsure,
+      use a webhook.</p>
+    <div class="grid2">
+      <label>Notify email
+        <input name="notify_email" value="{{ s.notify_email }}"
+               placeholder="you@example.com" autocomplete="off"></label>
+      <label>Webhook URL
+        <input name="notify_webhook" value="{{ s.notify_webhook }}" class="mono"
+               placeholder="https://discord.com/api/webhooks/…" autocomplete="off"></label>
+    </div>
     <h2>Defaults for newly linked servers</h2>
     <div class="grid2">
       <label>Default schedule (cron)

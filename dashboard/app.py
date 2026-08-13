@@ -64,6 +64,8 @@ DEFAULT_SETTINGS = {
     "ts_authkey": "",
     "ts_expiry": "",
     "repo_dir": "",
+    "notify_email": "",
+    "notify_webhook": "",
 }
 
 # --------------------------------------------------------------------- db ---
@@ -266,8 +268,8 @@ NAS_RETRY_HOURS="6"
 STAGING_DIR="/var/backups/webbackup"
 BWLIMIT="0"
 SCHEDULE_CRON="{default_cron}"
-NOTIFY_WEBHOOK=""
-NOTIFY_EMAIL=""
+NOTIFY_WEBHOOK="{notify_webhook}"
+NOTIFY_EMAIL="{notify_email}"
 NOTIFY_ON="failure"
 """.format(**{k: get_setting(k) for k in DEFAULT_SETTINGS})
 
@@ -721,6 +723,7 @@ def push():
     cron = build_cron(request.form)
     push_sched = bool(cron) and request.form.get("push_schedule")
     push_ret = request.form.get("push_retention")
+    push_notify = request.form.get("push_notify")
     if push_sched and not valid_cron(cron):
         flash("Invalid cron expression.")
         return redirect(url_for("index"))
@@ -733,6 +736,11 @@ def push():
     if push_ret:
         for k, v in keep.items():
             set_setting(k, v)
+    notify_email = request.form.get("notify_email", get_setting("notify_email")).strip()
+    notify_webhook = request.form.get("notify_webhook", get_setting("notify_webhook")).strip()
+    if push_notify:
+        set_setting("notify_email", notify_email)
+        set_setting("notify_webhook", notify_webhook)
 
     with db() as c:
         rows = [c.execute("SELECT * FROM servers WHERE id=?", (i,)).fetchone() for i in ids]
@@ -757,6 +765,13 @@ def push():
                         "KEEP_MONTHLY": keep["keep_monthly"]})
                     append("    retention → %s recent / %s weekly / %s monthly"
                            % (keep["keep_daily"], keep["keep_weekly"], keep["keep_monthly"]))
+                if push_notify:
+                    set_conf_values(client, {
+                        "NOTIFY_EMAIL": notify_email,
+                        "NOTIFY_WEBHOOK": notify_webhook,
+                        "NOTIFY_ON": "failure"})
+                    append("    notifications → email: %s · webhook: %s (on failure)"
+                           % (notify_email or "—", "set" if notify_webhook else "—"))
                 client.close()
             except Exception as exc:
                 append("    FAILED: %s" % exc)

@@ -41,6 +41,14 @@
       </div>
       <p class="hint">e.g. 8 recent + 4 weekly + 6 monthly ≈ restore points for ~6 months</p>
     </div>
+    <div class="subcard">
+      <label class="chk"><input type="checkbox" name="push_notify"> Notifications (on failure)</label>
+      <div class="row-fields">
+        <label>Email <input name="notify_email" value="{{ settings.notify_email }}" autocomplete="off"></label>
+        <label>Webhook URL <input name="notify_webhook" value="{{ settings.notify_webhook }}" class="mono" autocomplete="off"></label>
+      </div>
+      <p class="hint">Email needs a mail command on the server; webhooks (Discord/Slack/ntfy) work everywhere.</p>
+    </div>
   </div>
   <button type="submit">Apply to selected servers</button>
 </div>
