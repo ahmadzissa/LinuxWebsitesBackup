@@ -57,6 +57,7 @@ DEFAULT_SETTINGS = {
     "default_cron": "30 3 * * *",
     "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
     "ts_authkey": "",
+    "ts_expiry": "",
     "repo_dir": "",
 }
 
@@ -734,23 +735,50 @@ def job(job_id):
     return render_template("job.html", j=row)
 
 
+SECRET_SETTINGS = ("ts_authkey", "syno_pass")
+
+
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
 def settings():
     if request.method == "POST":
         for k in DEFAULT_SETTINGS:
             if k in request.form:
-                set_setting(k, request.form[k].strip())
+                v = request.form[k].strip()
+                if k in SECRET_SETTINGS:
+                    if v == "":
+                        continue            # empty = keep the saved secret
+                    if v.lower() == "clear":
+                        v = ""              # the word 'clear' removes it
+                set_setting(k, v)
         flash("Settings saved. They apply to newly linked servers; use the "
               "push panel on the home page to update existing servers.")
         return redirect(url_for("settings"))
     vals = {k: get_setting(k) for k in DEFAULT_SETTINGS}
+    # never render secrets back into the page — show a saved-flag instead
+    saved = {k: bool(vals[k]) for k in SECRET_SETTINGS}
+    for k in SECRET_SETTINGS:
+        vals[k] = ""
+    ts_note, ts_urgent = "", False
+    if vals["ts_expiry"]:
+        try:
+            d = datetime.strptime(vals["ts_expiry"], "%Y-%m-%d").date()
+            days = (d - datetime.now().date()).days
+            if days < 0:
+                ts_note, ts_urgent = "⚠ key EXPIRED %d day(s) ago — generate a new one" % -days, True
+            elif days <= 14:
+                ts_note, ts_urgent = "⚠ key expires in %d day(s) (%s)" % (days, vals["ts_expiry"]), True
+            else:
+                ts_note = "key expires %s (in %d days)" % (vals["ts_expiry"], days)
+        except ValueError:
+            pass
     pub = ""
     try:
         pub = dashboard_pubkey()
     except OSError:
         pass
-    return render_template("settings.html", s=vals, pubkey=pub)
+    return render_template("settings.html", s=vals, pubkey=pub, saved=saved,
+                           ts_note=ts_note, ts_urgent=ts_urgent)
 
 
 # ---------------------------------------------------------- panel updates ---

@@ -18,7 +18,7 @@
   <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
     <label>NAS password for the backup user (leave empty to use the one saved
       in Settings, if any)
-      <input name="nas_password" type="password"></label>
+      <input name="nas_password" type="password" autocomplete="new-password"></label>
     <button name="action" value="complete">Complete setup</button>
   </form>
 </div>

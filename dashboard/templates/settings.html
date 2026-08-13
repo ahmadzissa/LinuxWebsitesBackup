@@ -8,7 +8,7 @@
   <p class="hint">Used to configure every server you link. No NAS password is
     stored — it's asked for once when linking a server, only to authorize that
     server's key.</p>
-  <form method="post">
+  <form method="post" autocomplete="off">
     <div class="grid2">
       <label>NAS address (DDNS name / IP / Tailscale IP)
         <input name="syno_host" value="{{ s.syno_host }}" class="mono"></label>
@@ -19,7 +19,9 @@
       <label>Backup folder on NAS
         <input name="syno_path" value="{{ s.syno_path }}" class="mono"></label>
       <label>NAS backup user password (optional)
-        <input name="syno_pass" type="password" value="{{ s.syno_pass }}"></label>
+        {% if saved.syno_pass %}<span class="pill ok">✔ saved</span>{% endif %}
+        <input name="syno_pass" type="password" autocomplete="new-password"
+               placeholder="{{ '••••••••  saved — type a new one to replace, or the word clear to remove' if saved.syno_pass else '' }}"></label>
     </div>
     <p class="hint">If saved, it's used automatically when linking servers and in
       "Complete setup" — no more typing it per server. Leave empty if you prefer
@@ -34,8 +36,13 @@
       limits how long you can enroll new servers with it, not the servers
       themselves — but still disable key expiry per machine afterwards).</p>
     <label>Tailscale auth key (starts with tskey-auth-…)
-      <input name="ts_authkey" value="{{ s.ts_authkey }}" class="mono"
-             placeholder="tskey-auth-xxxxxxxxxxxx"></label>
+      {% if saved.ts_authkey %}<span class="pill ok">✔ key saved</span>
+        {% if ts_note %}<span class="pill {{ 'fail' if ts_urgent else '' }}">{{ ts_note }}</span>{% endif %}
+      {% endif %}
+      <input name="ts_authkey" class="mono" autocomplete="off"
+             placeholder="{{ 'saved — paste a new key to replace, or the word clear to remove' if saved.ts_authkey else 'tskey-auth-xxxxxxxxxxxx' }}"></label>
+    <label>Key expiry date (from the Tailscale dialog when you generated it)
+      <input name="ts_expiry" type="date" value="{{ s.ts_expiry }}"></label>
     <h2>Defaults for newly linked servers</h2>
     <div class="grid2">
       <label>Default schedule (cron)

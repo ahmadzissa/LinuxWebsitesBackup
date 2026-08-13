@@ -36,10 +36,11 @@
       <label>SSH port <input name="port" value="22" size="5"></label>
       <label>SSH user <input name="ssh_user" value="root"></label>
       <label>SSH password (used once, not stored)
-        <input name="password" type="password" required></label>
+        <input name="password" type="password" required
+               autocomplete="new-password"></label>
       <label>NAS password for the backup user (used once, not stored;
         empty = add key manually)
-        <input name="nas_password" type="password"></label>
+        <input name="nas_password" type="password" autocomplete="new-password"></label>
     </div>
     <button type="submit">Link server</button>
   </form>
