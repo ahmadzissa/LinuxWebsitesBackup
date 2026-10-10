@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon %}
+{% block title %}Browse backup files · {{ s.name }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='snapshot-files.css') }}">{% endblock %}
+{% block content %}
+  <div class="breadcrumb">
+    <a href="{{ url_for('index') }}#servers">Servers</a>{{ icon('chevron') }}<a href="{{ url_for('server', server_id=s.id) }}">{{ s.name }}</a>{{ icon('chevron') }}<a href="{{ url_for('snapshot_browse', server_id=s.id, snap=snap) }}">Snapshot {{ snap }}</a>{{ icon('chevron') }}<span>Browse files</span>
+  </div>
+  <div class="page-head">
+    <div><span class="eyebrow">SELECTIVE RECOVERY</span>
+      <h1 id="website-title">Browse backup files</h1>
+      <p>Select what you need. Review the changes before restoring.</p>
+    </div>
+    <a class="btn secondary" href="{{ url_for('snapshot_browse', server_id=s.id, snap=snap) }}">{{ icon('arrow-left') }} Back to snapshot</a>
+  </div>
+  <div class="card file-browser" id="file-browser" data-index-url="{{ url_for('snapshot_file_index', server_id=s.id, snap=snap, archive=arch) }}">
+    <p id="load-status" role="status" class="hint">Reading backup files… Older backups may take longer to list the first time.</p>
+    <div id="browser-content" hidden>
+      <div class="file-destination">{{ icon('folder') }}<div><span>Restore destination on {{ s.name }}</span><strong class="mono" id="restore-destination"></strong>
+        </div><span class="pill">{{ snap }}</span>
+      </div>
+      <p class="hint">Select files or folders. Your selection stays as you browse. Folders include all regular files and subfolders; symbolic links and special files are skipped.</p>
+      <div class="file-toolbar">
+        <nav class="file-breadcrumbs" aria-label="Backup folder" id="breadcrumbs">
+        </nav>
+        <label class="search-field filter-label">{{ icon('search') }}<input type="search" id="file-filter" aria-label="Filter this folder" placeholder="Search this folder…" autocomplete="off">
+        </label>
+      </div>
+      <div class="file-table-scroll table-scroll">
+        <table class="file-table">
+          <thead>
+            <tr>
+              <th>
+                <input type="checkbox" id="select-visible" aria-label="Select all visible files and folders">
+              </th>
+              <th>Name</th>
+              <th>Size</th>
+              <th>Modified</th>
+            </tr>
+          </thead>
+          <tbody id="file-rows">
+          </tbody>
+        </table>
+      </div>
+      <p class="hint folder-count" id="folder-status" role="status">
+      </p>
+    </div>
+  </div>
+  <div class="card selection-card" id="selection-card" hidden>
+    <div class="row-head">
+      <div class="card-title">{{ icon('check-circle') }}<h2 id="selection-summary" aria-live="polite">No files selected</h2>
+      </div>
+      <button type="button" class="small secondary" id="clear-selection">Clear selection</button>
+    </div>
+    <ul class="selected-paths" id="selected-paths">
+    </ul>
+    <form method="post" id="restore-form" action="{{ url_for('snapshot_restore_selected', server_id=s.id, snap=snap) }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="archive" value="{{ arch }}">
+      <div id="selection-inputs">
+      </div>
+      <div class="button-row">
+        <button type="submit" id="review-restore" disabled>Review selected restore {{ icon('arrow-right') }}</button><span class="hint">You'll confirm the destination and files on the next step.</span>
+      </div>
+    </form>
+  </div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='snapshot-files.js') }}" defer></script>{% endblock %}

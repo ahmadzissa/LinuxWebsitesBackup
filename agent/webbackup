@@ -24,7 +24,8 @@
 #
 set -u
 
-VERSION="1.4.4"
+VERSION="1.5.0"
+ARCHIVE_HELPER="/usr/local/lib/webbackup/archiveops.py"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -622,6 +623,8 @@ cmd_run() {
     need_root run
     require_configured
     local cron_mode="${1:-}"
+    command -v python3 >/dev/null && [ -f "$ARCHIVE_HELPER" ] || \
+        die "agent helper missing — reinstall the agent using install.sh or Update backup agent in the dashboard"
 
     # prevent overlapping runs
     exec 200>"$LOCK_FILE"
@@ -673,18 +676,31 @@ cmd_run() {
 
     # -- website files
     if [ "$BACKUP_FILES" = yes ]; then
-        local r name ex_args=()
+        local r name original_name suffix ex_args=()
         local pat
         for pat in $EXCLUDES; do ex_args+=(--exclude="$pat"); done
         while IFS= read -r r; do
             [ -d "$r" ] || continue
-            name="$(echo "$r" | sed 's|^/||; s|/|_|g')"
+            r="${r%/}"
+            name="$(python3 "$ARCHIVE_HELPER" name "$r")" || die "could not name archive for $r"
+            # Keep every root if two users/roots share the same domain name.
+            original_name="$name"; suffix=2
+            while [ -e "$staging/files/$name.tar.gz" ]; do
+                name="$original_name-$suffix"; suffix=$((suffix + 1))
+            done
             [ "$cron_mode" = "--cron" ] || say "  archiving $r ..."
             if ! tar -czf "$staging/files/$name.tar.gz" "${ex_args[@]}" -C "$(dirname "$r")" "$(basename "$r")" 2>>"$LOG_FILE"; then
                 warn "tar reported warnings/errors for $r (see log)"
             fi
             # path map: lets the panel restore a single site to the right place
             printf '%s\t%s\n' "$name.tar.gz" "$(dirname "$r")" >> "$staging/files/PATHS.txt"
+            # Root map removes ambiguity for domain-named archives. PATHS.txt
+            # remains compatible with older restore commands.
+            printf '%s\t%s\n' "$name.tar.gz" "$r" >> "$staging/files/ROOTS.txt"
+            if ! python3 "$ARCHIVE_HELPER" index "$staging/files/$name.tar.gz" > "$staging/files/$name.index.json"; then
+                rm -f "$staging/files/$name.index.json"
+                warn "could not index $r; the dashboard can still read the archive directly"
+            fi
         done < <(resolve_roots)
     fi
 
@@ -933,25 +949,39 @@ cmd_restore_site() {  # webbackup restore-site <snapshot> <archive.tar.gz>
     say "✔ Website restored from $snap into $parent/"
 }
 
-cmd_restore_file() {  # webbackup restore-file <snapshot> <archive.tar.gz> <path/inside/archive>
-    need_root restore-file
+cmd_restore_items() {  # webbackup restore-items <snapshot> <archive.tar.gz> <selection.json>
+    need_root restore-items
     require_configured
-    local snap="$1" arch="$2" relpath="$3" host tmp parent
-    host="$(hostname)"; tmp="/tmp/webbackup-item"
-    [ -n "$snap" ] && [ -n "$arch" ] && [ -n "$relpath" ] || \
-        die "usage: webbackup restore-file <snapshot> <archive.tar.gz> <path/inside/archive>"
-    case "$relpath" in /*|*..*) die "invalid path" ;; esac
-    rm -rf "$tmp"; mkdir -p "$tmp"
+    local snap="${1:-}" arch="${2:-}" selection="${3:-}" host tmp parent
+    [[ "$snap" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}$ ]] || die "invalid snapshot"
+    [[ "$arch" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz$ ]] || die "invalid archive"
+    [ -f "$selection" ] && [ ! -L "$selection" ] || die "selection file missing"
+    [ -f "$ARCHIVE_HELPER" ] && command -v python3 >/dev/null || die "update the agent to v1.5.0+ for selected restores"
+    host="$(hostname)"
+    # A private workspace per job prevents concurrent restores from clobbering
+    # each other's download or selection files. The trap also runs on failure.
+    tmp="$(mktemp -d /tmp/webbackup-selected.XXXXXXXX)" || die "could not create restore workspace"
+    trap 'rm -rf -- "$tmp"' EXIT
     say "Fetching $arch from snapshot $snap ..."
     rsync_down "$SYNO_PATH/$host/$snap/files/$arch" "$tmp/" || die "download failed"
     rsync_down "$SYNO_PATH/$host/$snap/files/PATHS.txt" "$tmp/" 2>/dev/null || \
         die "this snapshot has no path map — use full restore instead"
     parent="$(awk -F'\t' -v a="$arch" '$1==a{print $2; exit}' "$tmp/PATHS.txt")"
     [ -n "$parent" ] || die "no path mapping for $arch"
-    say "Restoring single file: $parent/$relpath (overwritten if it exists) ..."
-    tar -xzf "$tmp/$arch" -C "$parent" "$relpath" || die "'$relpath' not found in the archive (check the exact path, including the site's top folder)"
-    rm -rf "$tmp"
-    say "✔ File restored: $parent/$relpath"
+    say "Replacing selected files in their original server locations ..."
+    python3 "$ARCHIVE_HELPER" restore "$tmp/$arch" "$parent" "$selection" || die "selected restore failed (see log above)"
+    rm -rf -- "$tmp"
+    trap - EXIT
+}
+
+cmd_restore_file() {  # backwards-compatible single-file CLI
+    local selection
+    selection="$(mktemp /tmp/webbackup-selection.XXXXXXXX)" || die "could not create selection"
+    python3 -c 'import json,sys; json.dump([sys.argv[1]],sys.stdout)' "${3:-}" > "$selection"
+    (cmd_restore_items "${1:-}" "${2:-}" "$selection")
+    local rc=$?
+    rm -f -- "$selection"
+    return "$rc"
 }
 
 cmd_restore_db() {  # webbackup restore-db <snapshot> <database>
@@ -1144,6 +1174,7 @@ case "${1:-menu}" in
     restore-site) cmd_restore_site "${2:-}" "${3:-}" ;;
     restore-db)   cmd_restore_db "${2:-}" "${3:-}" ;;
     restore-file) cmd_restore_file "${2:-}" "${3:-}" "${4:-}" ;;
+    restore-items) cmd_restore_items "${2:-}" "${3:-}" "${4:-}" ;;
     clear-restore)
         freed="$(du -sh /root/webbackup-restore 2>/dev/null | cut -f1)"
         rm -rf /root/webbackup-restore /tmp/webbackup-item /tmp/wb-agent

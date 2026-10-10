@@ -42,7 +42,7 @@ mkdir -p "$APP_DIR" "$CFG_DIR" /var/lib/webbackup-dashboard
 cp -r "$SRC_DIR/app.py" "$SRC_DIR/sshops.py" "$SRC_DIR/requirements.txt" \
       "$SRC_DIR/templates" "$SRC_DIR/static" "$APP_DIR/"
 mkdir -p "$APP_DIR/agent"
-cp "$REPO_DIR/agent/webbackup" "$REPO_DIR/agent/install.sh" "$APP_DIR/agent/"
+cp "$REPO_DIR/agent/webbackup" "$REPO_DIR/agent/install.sh" "$REPO_DIR/agent/archiveops.py" "$APP_DIR/agent/"
 
 python3 -m venv "$APP_DIR/venv" || die "could not create virtualenv (install python3-venv)"
 "$APP_DIR/venv/bin/pip" install -q --upgrade pip

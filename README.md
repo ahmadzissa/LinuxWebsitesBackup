@@ -73,7 +73,7 @@ dashboard's SSH key, your admin login, and a systemd service. Then open
    ```
 
    Paste it on any web server: it downloads the agent *from your panel*
-   (servers don't need git or Python), installs it, registers the server with
+   (servers don't need git; the installer adds Python 3), installs it, registers the server with
    the panel and authorizes the panel's SSH key. The server appears on the
    Servers page as **enrolled** — open it, click **Complete setup**, enter the
    NAS user's password once (not stored), and the panel configures the NAS
@@ -94,6 +94,28 @@ dashboard's SSH key, your admin login, and a systemd service. Then open
 | Jobs | Live output of every backup/restore/link with success/failure |
 | Settings | NAS connection + defaults for new servers |
 
+### Restore selected website files
+
+1. Open a snapshot and click **Browse & select** beside the website's domain.
+2. Browse `public_html` (HestiaCP), or the website's document root. Check one or
+   more files or folders; selections remain when you open another folder.
+3. Click **Review selected restore**, check the original destination and file
+   count, then confirm **Replace selected files on server**. Follow the job log.
+
+Only selected regular files are replaced. Missing selected files/folders are
+created, and other live files remain in place. Folder selections include their
+regular files and subfolders; symbolic links and special files are skipped.
+The restore rejects path traversal and destinations that cross symbolic links,
+stages selected contents before changing live files, and retains saved file
+permissions, ownership and modification times on Linux.
+
+After updating the dashboard, click **Update backup agent** on each server once.
+Agent v1.5.0 adds Python 3, the archive helper, domain-based filenames (for example
+`wordpress.areviewsapp.com.tar.gz`), and file indexes for faster browsing. Older
+path-named archives are still supported and are indexed on demand. Direct
+restores require the snapshot's original `files/PATHS.txt` mapping; snapshots
+without that mapping can be browsed and downloaded for a manual restore.
+
 ### Using the agent standalone (no dashboard)
 
 ```sh
@@ -109,7 +131,8 @@ the same commands over SSH.
 
 ```
 WebBackups/<server-hostname>/<YYYY-MM-DD_HHMM>/
-├── files/       one tar.gz per web root (e.g. var_www.tar.gz)
+├── files/       <domain>.tar.gz per website; path-based names for system roots
+│                <domain>.index.json, PATHS.txt (parent map), ROOTS.txt (root map)
 ├── databases/   mysql_<db>.sql.gz, pgsql_<db>.sql.gz
 ├── configs/     etc-configs.tar.gz, packages.txt, root-crontab.txt
 └── manifest.txt
@@ -125,7 +148,8 @@ Every snapshot is self-contained; retention (e.g. 7 recent + 4 weekly +
   reverse proxy (nginx + Let's Encrypt).
 - Server and NAS passwords are used once during linking and never stored;
   afterwards everything is SSH-key based.
-- Restores never overwrite anything automatically.
+- Downloading a snapshot does not change live files. Website/database restores
+  and selected-file restores replace live contents only after confirmation.
 
 ## Requirements
 

@@ -1,134 +1,186 @@
 {% extends "base.html" %}
 {% from "_schedule.html" import schedule_fields %}
+{% from "_ui.html" import icon, status, job_status %}
 {% block title %}{{ s.name }}{% endblock %}
 {% block content %}
-<div class="row-head">
-  <h1>{{ s.name }} <span class="mono dim">{{ s.host }}:{{ s.port }}</span></h1>
-  <span class="pill {{ s.status }}">{{ s.status }}</span>
-</div>
-
-{% if error %}
-<div class="flash">⚠ Could not reach the server right now: {{ error }}</div>
-{% endif %}
-
-{% if s.status == 'enrolled' or not conf %}
-<div class="card">
-  <h2>Complete setup</h2>
-  <p>This server is connected to the panel but has no backup configuration yet.
-  One step left: configure its backups and authorize it on the NAS.</p>
-  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
-    <label>NAS password for the backup user (leave empty to use the one saved
-      in Settings, if any)
-      <input name="nas_password" type="password" autocomplete="new-password"></label>
-    <button name="action" value="complete">Complete setup</button>
-  </form>
-</div>
-{% endif %}
-
-<div class="card">
-  <h2>Actions</h2>
-  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" class="inline-forms">
-    <button name="action" value="backup">▶ Backup now</button>
-    <button name="action" value="test">Test NAS connection</button>
-    <button name="action" value="refresh">Refresh status</button>
-    <button name="action" value="clear_restore"
-            onclick="return confirm('Delete all downloaded restore files (/root/webbackup-restore) on this server? Backups on the NAS are not affected.')">🧹 Clear restore files</button>
-  </form>
-  <p class="hint">Last backup: <b>{{ s.last_backup or 'never' }}</b> ·
-     last checked: {{ s.last_check or 'never' }}</p>
-</div>
-
-<div class="card">
-  <h2>Schedule</h2>
-  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
-    {{ schedule_fields() }}
-    <button name="action" value="schedule">Set schedule on this server</button>
-  </form>
-</div>
-
-<div class="card">
-  <h2>Snapshots on the NAS</h2>
-  {% if snapshots %}
-  <table>
-    <tr><th>Snapshot</th><th>Size</th><th></th><th></th><th></th></tr>
-    {% for snap in snapshots %}
-    <tr>
-      <td class="mono">{{ snap }}</td>
-      <td class="mono">{{ snap_sizes.get(snap, '—') }}</td>
-      <td>
-        <a class="btn small" href="{{ url_for('snapshot_browse', server_id=s.id, snap=snap) }}">⬇ Browse &amp; download</a>
-      </td>
-      <td>
-        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-              onsubmit="return confirm('Download snapshot {{ snap }} to this server\'s /root/webbackup-restore/ folder? Nothing will be overwritten.')">
-          <input type="hidden" name="snapshot" value="{{ snap }}">
-          <button name="action" value="restore" class="small">Restore to server</button>
-        </form>
-      </td>
-      <td>
-        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-              onsubmit="return confirm('Delete snapshot {{ snap }} from the NAS permanently?')
-                     && confirm('Are you SURE? Snapshot {{ snap }} will be gone forever — this cannot be undone.')">
-          <input type="hidden" name="snapshot" value="{{ snap }}">
-          <button name="action" value="delete_snapshot" class="small danger">🗑 Delete</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  <p class="hint">Restore downloads the snapshot to the server's
-    <code>/root/webbackup-restore/</code> folder and the job log shows the exact
-    commands to put files/databases back. Nothing is overwritten automatically.</p>
-  {% else %}
-  <p>No snapshots yet (or the server/NAS is unreachable).</p>
+  {% set schedule = namespace(cron='') %}
+  {% for line in conf.splitlines() %}{% if line.startswith('SCHEDULE_CRON=') %}{% set schedule.cron = line.split('=',1)[1]|trim|replace('"','')|replace("'","") %}
+    {% endif %}
+  {% endfor %}
+  <div class="breadcrumb">
+    <a href="{{ url_for('index') }}#servers">Servers</a>{{ icon('chevron') }}<span>{{ s.name }}</span>
+  </div>
+  <div class="page-head">
+    <div><span class="eyebrow">SERVER WORKSPACE</span>
+      <h1>{{ s.name }}</h1>
+      <p><span class="mono">{{ s.host }}:{{ s.port }}</span> <span class="footer-dot">·</span> {{ s.ssh_user or 'root' }}</p>
+    </div>
+    <div class="button-row" style="margin-top:0">{{ status(s.status) }}<form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+        <button name="action" value="backup">{{ icon('backup') }} Backup now</button>
+      </form>
+    </div>
+  </div>
+  {% if error %}<div class="flash">{{ icon('alert') }}<span>Could not reach this server: {{ error }}</span>
+  </div>{% endif %}
+  {% if s.status == 'enrolled' or not conf %}
+    <div class="card">
+      <div class="card-title">{{ icon('shield') }}<h2>One more step to start backing up.</h2>
+      </div>
+      <p class="hint">Connect this server to your NAS and apply your backup defaults.</p>
+      <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+        <label>NAS backup user password<input name="nas_password" type="password" autocomplete="new-password" placeholder="Leave blank to use the password saved in Settings">
+        </label>
+        <div class="button-row">
+          <button name="action" value="complete">Complete setup {{ icon('arrow-right') }}</button>
+          <a class="text-link" href="{{ url_for('settings') }}#storage">Review NAS settings</a>
+        </div>
+      </form>
+    </div>
   {% endif %}
-</div>
-
-<div class="card">
-  <h2>Configuration file</h2>
-  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
-    <textarea name="conf" rows="18" class="mono">{{ conf }}</textarea>
-    <button name="action" value="save_conf">Save to server</button>
-  </form>
-</div>
-
-<div class="card">
-  <h2>Recent jobs for this server</h2>
-  <table>
-    <tr><th>#</th><th>Type</th><th>Status</th><th>Started</th></tr>
-    {% for j in jobs %}
-    <tr>
-      <td><a href="{{ url_for('job', job_id=j.id) }}">{{ j.id }}</a></td>
-      <td>{{ j.type }}</td>
-      <td><span class="pill {{ j.status }}">{{ j.status }}</span></td>
-      <td class="mono">{{ j.created }}</td>
-    </tr>
-    {% else %}
-    <tr><td colspan="4">No jobs yet.</td></tr>
-    {% endfor %}
-  </table>
-</div>
-
-<div class="card danger">
-  <h2>Remove server</h2>
-  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-        onsubmit="
-          var del = this.querySelector('[name=delete_backups]').checked;
-          if (!confirm(del
-              ? 'Remove this server AND DELETE ALL ITS BACKUPS from the NAS?'
-              : 'Remove this server from the dashboard? Backups on the NAS and the agent on the server stay untouched.')) return false;
-          if (del) {
-            var typed = prompt('FINAL CONFIRMATION — this deletes every snapshot of this server forever.\nType the server name ({{ s.name }}) to proceed:');
-            if (typed !== {{ s.name|tojson }}) { alert('Name did not match — nothing was done.'); return false; }
-            this.querySelector('[name=confirm_name]').value = typed;
-          }
-          return true;">
-    <label class="chk">
-      <input type="checkbox" name="delete_backups" value="1">
-      Also permanently delete ALL of this server's backups from the NAS
-    </label>
-    <input type="hidden" name="confirm_name" value="">
-    <button name="action" value="unlink" class="danger">Remove from dashboard</button>
-  </form>
-</div>
+  <div class="detail-stats">
+    <div class="detail-stat"><span>Last backup</span><strong class="mono">{{ s.last_backup or 'No backup yet' }}</strong>
+    </div>
+    <div class="detail-stat"><span>Available snapshots</span><strong>{{ snapshots|length }} restore point{{ '' if snapshots|length == 1 else 's' }}</strong>
+    </div>
+    <div class="detail-stat"><span>Last status check</span><strong class="mono">{{ s.last_check or 'Not checked yet' }}</strong>
+    </div>
+  </div>
+  <nav class="tabs" data-tab-group aria-label="Server sections">
+    <a href="#backups" data-tab="backups">{{ icon('layers') }} Backups</a>
+    <a href="#schedule" data-tab="schedule">{{ icon('clock') }} Schedule</a>
+    <a href="#server-activity" data-tab="server-activity">{{ icon('activity') }} Activity</a>
+    <a href="#maintenance" data-tab="maintenance">{{ icon('settings') }} Maintenance</a>
+  </nav>
+  <section id="backups">
+    <div class="card flush">
+      <div class="section-head">
+        <div>
+          <h2>Backup snapshots</h2>
+          <p class="hint">Browse a restore point to download or recover your files.</p>
+        </div>
+        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+          <button name="action" value="refresh" class="small secondary">{{ icon('refresh') }} Refresh status</button>
+        </form>
+      </div>
+      {% if snapshots %}
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Snapshot</th>
+                <th>Size</th>
+                <th>Files &amp; recovery</th>
+                <th>Download to server</th>
+                <th>Delete</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for snap in snapshots %}<tr>
+                  <td><span class="mono">{{ snap }}</span>
+                  </td>
+                  <td class="mono dim">{{ snap_sizes.get(snap,'—') }}</td>
+                  <td>
+                    <a class="btn small" href="{{ url_for('snapshot_browse', server_id=s.id, snap=snap) }}">{{ icon('folder') }} Browse files</a>
+                  </td>
+                  <td>
+                    <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" data-confirm="Download snapshot {{ snap }} to this server's /root/webbackup-restore/ folder? Live files will remain unchanged.">
+                      <input type="hidden" name="snapshot" value="{{ snap }}">
+                      <button name="action" value="restore" class="small secondary">{{ icon('download') }} Download to server</button>
+                    </form>
+                  </td>
+                  <td>
+                    <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" data-confirm="Permanently delete snapshot {{ snap }} from the NAS?" data-confirm-second="This backup will be gone forever. Delete snapshot {{ snap }}?">
+                      <input type="hidden" name="snapshot" value="{{ snap }}">
+                      <button name="action" value="delete_snapshot" class="small danger" aria-label="Delete snapshot {{ snap }}">{{ icon('trash') }} Delete</button>
+                    </form>
+                  </td>
+              </tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="table-count">Downloads are saved to <code>/root/webbackup-restore/</code>. Follow the job log for recovery instructions.</div>
+      {% else %}<div class="empty-state">
+          <div class="empty-icon">{{ icon('layers') }}</div>
+          <h2>No snapshots available yet.</h2>
+          <p>Run your first backup to create a restore point. If backups already exist, check your server and NAS connection.</p>
+          <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+            <button name="action" value="backup">{{ icon('backup') }} Create a backup</button>
+          </form>
+    </div>{% endif %}</div>
+  </section>
+  <section id="schedule">
+    <div class="card">
+      <div class="card-title">{{ icon('clock') }}<h2>Backup schedule</h2>
+      </div>
+      <p class="hint">Choose when this server backs up. Times use the server's timezone.</p>
+      <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">{{ schedule_fields(schedule.cron) }}<div class="form-actions">
+          <button name="action" value="schedule">{{ icon('check') }} Save schedule</button><span class="hint">Applies to this server.</span>
+        </div>
+      </form>
+    </div>
+  </section>
+  <section id="server-activity">
+    <div class="card flush">
+      <div class="section-head">
+        <h2>Recent server activity</h2>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Job</th>
+              <th>Action</th>
+              <th>Status</th>
+              <th>Started</th>
+            </tr>
+          </thead>
+          <tbody>{% for j in jobs %}<tr>
+                <td>
+                  <a href="{{ url_for('job', job_id=j.id) }}">#{{ j.id }}</a>
+                </td>
+                <td>{{ j.type|replace('_',' ')|capitalize|replace(' nas',' NAS') }}</td>
+                <td>{{ job_status(j.status) }}</td>
+                <td class="mono dim">{{ j.created }}</td>
+            </tr>{% else %}<tr>
+                <td colspan="4" class="empty-cell">No activity for this server yet.</td>
+          </tr>{% endfor %}</tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  <section id="maintenance">
+    <div class="card">
+      <div class="card-title">{{ icon('settings') }}<h2>Server maintenance</h2>
+      </div>
+      <p class="hint">Test connectivity, update the backup agent, or clear downloaded restore files.</p>
+      <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" class="inline-forms">
+        <button name="action" value="test" class="secondary">Test NAS connection</button>
+        <button name="action" value="refresh" class="secondary">{{ icon('refresh') }} Refresh status</button>
+        <button name="action" value="update_agent" class="secondary">Update backup agent</button>
+        <button name="action" value="clear_restore" class="secondary" data-confirm="Delete downloaded restore files in /root/webbackup-restore/ on this server? NAS backups will remain unchanged.">Clear restore files</button>
+      </form>
+    </div>
+    <div class="card">
+      <div class="card-title">{{ icon('terminal') }}<h2>Agent configuration</h2>
+      </div>
+      <p class="hint">Advanced settings for this server. Review your changes before saving.</p>
+      <form method="post" action="{{ url_for('server_action', server_id=s.id) }}">
+        <label>Configuration file<textarea name="conf" rows="16" class="mono" spellcheck="false">{{ conf }}</textarea>
+        </label>
+        <div class="button-row">
+          <button name="action" value="save_conf">Save configuration to server</button>
+        </div>
+      </form>
+    </div>
+    <div class="card danger">
+      <h2 class="danger-heading">Remove this server</h2>
+      <p class="hint">Unlink the server from this workspace. Choose below if you also want to delete its backups.</p>
+      <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" data-remove-server="{{ s.name }}">
+        <label class="chk">
+          <input type="checkbox" name="delete_backups" value="1"> Also permanently delete every backup of this server from the NAS</label>
+        <input type="hidden" name="confirm_name" value="">
+        <button name="action" value="unlink" class="danger">{{ icon('trash') }} Remove from workspace</button>
+      </form>
+    </div>
+  </section>
 {% endblock %}

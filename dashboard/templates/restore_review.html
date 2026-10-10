@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon %}
+{% block title %}Review restore · {{ site.label }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='snapshot-files.css') }}">{% endblock %}
+{% block content %}
+  <div class="breadcrumb">
+    <a href="{{ url_for('server', server_id=s.id) }}">{{ s.name }}</a>{{ icon('chevron') }}<a href="{{ url_for('snapshot_files', server_id=s.id, snap=snap, arch=arch) }}">{{ site.label }}</a>{{ icon('chevron') }}<span>Review restore</span>
+  </div>
+  <div class="page-head">
+    <div><span class="eyebrow">ONE LAST CHECK</span>
+      <h1>Review your restore.</h1>
+      <p>Confirm the files and destination before replacing live content.</p>
+    </div>
+    <a class="btn secondary" href="{{ url_for('snapshot_files', server_id=s.id, snap=snap, arch=arch) }}">{{ icon('arrow-left') }} Back to files</a>
+  </div>
+  <div class="flash">{{ icon('alert') }}<span><strong>This replaces live files.</strong> Selected files will be overwritten with their backup versions. Missing files and folders will be created; other live files remain in place.</span>
+  </div>
+  <div class="detail-stats">
+    <div class="detail-stat"><span>Files to replace</span><strong>{{ files|length }} file(s) · {{ total_size }}</strong>
+    </div>
+    <div class="detail-stat"><span>Restore point</span><strong class="mono">{{ snap }}</strong>
+    </div>
+    <div class="detail-stat"><span>Destination server</span><strong>{{ s.name }} · {{ s.host }}</strong>
+    </div>
+  </div>
+  <div class="card danger">
+    <div class="card-title">{{ icon('globe') }}<h2>{{ site.label }}</h2>
+    </div>
+    <div class="file-destination" style="margin-top:18px">{{ icon('folder') }}<div><span>Restore destination</span><strong class="mono restore-path">{{ site.path }}</strong>
+      </div>
+    </div>
+    <h3>Your selection</h3>
+    <ul class="selected-paths">{% for path in selection %}<li class="mono">{{ path }}</li>{% endfor %}</ul>
+    <details>
+      <summary>Preview files to replace ({{ files|length }})</summary>
+      <ul class="selected-paths">{% for file in files[:200] %}<li class="mono">{{ file.path }}</li>{% endfor %}</ul>{% if files|length > 200 %}<p class="hint">Showing the first 200 files. All {{ files|length }} selected files will be restored.</p>{% endif %}</details>
+    <form method="post" action="{{ url_for('snapshot_restore_selected', server_id=s.id, snap=snap) }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="restore_token" value="{{ token }}">
+      <div class="form-actions">
+        <button type="submit" class="danger solid">{{ icon('backup') }} Replace {{ files|length }} selected file(s) on server</button>
+        <a class="text-link" href="{{ url_for('snapshot_files', server_id=s.id, snap=snap, arch=arch) }}">Cancel</a>
+      </div>
+    </form>
+  </div>
+  <p class="hint">Follow the restore in the live job log. Selected restores require agent v1.5.0 or newer; update the agent from your server's Maintenance section if needed. Symbolic links and special files are skipped.</p>
+{% endblock %}

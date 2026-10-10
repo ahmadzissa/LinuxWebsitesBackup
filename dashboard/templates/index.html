@@ -1,77 +1,184 @@
 {% extends "base.html" %}
 {% from "_schedule.html" import schedule_fields %}
-{% block title %}Servers{% endblock %}
+{% from "_ui.html" import icon, status, job_status %}
+{% block title %}Overview{% endblock %}
 {% block content %}
-<div class="row-head">
-  <h1>Servers</h1>
-  <a class="btn" href="{{ url_for('add_server') }}">+ Link a server</a>
-</div>
-
-{% if servers %}
-<form method="post" action="{{ url_for('push') }}">
-<table>
-  <tr><th></th><th>Name</th><th>Host</th><th>Last backup</th><th>Status</th><th></th></tr>
-  {% for s in servers %}
-  <tr>
-    <td><input type="checkbox" name="server_ids" value="{{ s.id }}"></td>
-    <td><a href="{{ url_for('server', server_id=s.id) }}"><b>{{ s.name }}</b></a></td>
-    <td class="mono">{{ s.host }}:{{ s.port }}</td>
-    <td class="mono">{{ s.last_backup or '—' }}</td>
-    <td><span class="pill {{ s.status }}">{{ s.status }}</span></td>
-    <td><a class="btn small" href="{{ url_for('server', server_id=s.id) }}">Open</a></td>
-  </tr>
-  {% endfor %}
-</table>
-
-<div class="card">
-  <h2>Push settings to selected servers</h2>
-  <p class="hint">Tick servers in the table above, choose what to apply, then push.</p>
-  <div class="grid2">
-    <div class="subcard">
-      <label class="chk"><input type="checkbox" name="push_schedule" checked> Schedule</label>
-      {{ schedule_fields() }}
-      <p class="hint">Current default: <code>{{ settings.default_cron }}</code></p>
+  {% set healthy = servers|selectattr('status','equalto','ok')|list|length %}
+  {% set connected = servers|selectattr('status','equalto','linked')|list|length %}
+  {% set attention = servers|length - healthy - connected %}
+  {% set running = jobs|selectattr('status','equalto','running')|list|length %}
+  <div class="page-head">
+    <div><span class="eyebrow">YOUR BACKUP WORKSPACE</span>
+      <h1>A little peace of mind.</h1>
+      <p>Keep an eye on your servers. Keep your websites protected.</p>
     </div>
-    <div class="subcard">
-      <label class="chk"><input type="checkbox" name="push_retention" checked> Retention (snapshots to keep)</label>
-      <div class="row-fields">
-        <label>Recent <input name="keep_daily" value="{{ settings.keep_daily }}"></label>
-        <label>Weekly <input name="keep_weekly" value="{{ settings.keep_weekly }}"></label>
-        <label>Monthly <input name="keep_monthly" value="{{ settings.keep_monthly }}"></label>
+    <a class="btn" href="{{ url_for('add_server') }}">{{ icon('plus') }} Link a server</a>
+  </div>
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-top"><span class="stat-label">Total servers</span><span class="stat-icon">{{ icon('server') }}</span>
       </div>
-      <p class="hint">e.g. 8 recent + 4 weekly + 6 monthly ≈ restore points for ~6 months</p>
+      <div class="stat-value">{{ servers|length }}</div>
+      <div class="stat-note">In your workspace</div>
     </div>
-    <div class="subcard">
-      <label class="chk"><input type="checkbox" name="push_notify"> Notifications (on failure)</label>
-      <div class="row-fields">
-        <label>Email <input name="notify_email" value="{{ settings.notify_email }}" autocomplete="off"></label>
-        <label>Webhook URL <input name="notify_webhook" value="{{ settings.notify_webhook }}" class="mono" autocomplete="off"></label>
+    <div class="stat-card">
+      <div class="stat-top"><span class="stat-label">Healthy backups</span><span class="stat-icon green">{{ icon('shield') }}</span>
       </div>
-      <p class="hint">Email needs a mail command on the server; webhooks (Discord/Slack/ntfy) work everywhere.</p>
+      <div class="stat-value">{{ healthy }}</div>
+      <div class="stat-note"><span class="note-dot"></span>Last backup successful</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-top"><span class="stat-label">Needs attention</span><span class="stat-icon amber">{{ icon('alert') }}</span>
+      </div>
+      <div class="stat-value">{{ attention }}</div>
+      <div class="stat-note {{ 'warning' if attention }}">{{ 'Review issues or finish setup' if attention else 'Everything looks good' }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-top"><span class="stat-label">Recent running jobs</span><span class="stat-icon teal">{{ icon('activity') }}</span>
+      </div>
+      <div class="stat-value">{{ running }}</div>
+      <div class="stat-note">Across the latest {{ jobs|length }} jobs</div>
     </div>
   </div>
-  <button type="submit">Apply to selected servers</button>
-</div>
-</form>
-{% else %}
-<div class="card"><p>No servers linked yet.
-  First set your NAS connection in <a href="{{ url_for('settings') }}">Settings</a>,
-  then <a href="{{ url_for('add_server') }}">link your first server</a>.</p></div>
-{% endif %}
-
-<h2>Recent jobs</h2>
-<table>
-  <tr><th>#</th><th>Server</th><th>Type</th><th>Status</th><th>Started</th></tr>
-  {% for j in jobs %}
-  <tr>
-    <td><a href="{{ url_for('job', job_id=j.id) }}">{{ j.id }}</a></td>
-    <td>{{ j.server_name }}</td>
-    <td>{{ j.type }}</td>
-    <td><span class="pill {{ j.status }}">{{ j.status }}</span></td>
-    <td class="mono">{{ j.created }}</td>
-  </tr>
+  {% if not settings.syno_host or not settings.syno_user %}
+    <div class="flash info-banner">{{ icon('info') }}<span><strong>Start with your backup destination.</strong> Set up your Synology NAS in <a href="{{ url_for('settings') }}#storage">Settings</a>, then link your first server.</span>
+    </div>
+  {% endif %}
+  {% if servers %}
+    <form method="post" action="{{ url_for('push') }}" id="server-settings-form">
+      <section class="card flush" id="servers" data-filter-table>
+        <div class="section-head">
+          <h2>Your servers <span class="count-badge">{{ servers|length }}</span>
+          </h2><span class="selection-info" id="server-selection" aria-live="polite">Select servers to apply settings</span>
+        </div>
+        <div class="table-toolbar">
+          <label class="search-field">{{ icon('search') }}<input type="search" data-table-search aria-label="Search servers" placeholder="Search servers by name or address…" autocomplete="off">
+          </label>
+          <select class="filter-select" data-table-filter aria-label="Filter servers by status">
+            <option value="">All statuses</option>
+            <option value="ok">Healthy</option>
+            <option value="linked">Connected</option>
+            <option value="attention">Needs attention</option>
+            <option value="enrolled">Setup needed</option>
+          </select>
+        </div>
+        <div class="table-scroll">
+          <table class="server-table">
+            <thead>
+              <tr>
+                <th>
+                  <input type="checkbox" id="select-all-servers" aria-label="Select all visible servers">
+                </th>
+                <th>Server</th>
+                <th>Address</th>
+                <th>Last backup</th>
+                <th>Status</th>
+                <th><span class="dim">Details</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for s in servers %}
+                <tr data-filter-row data-status="{{ s.status }}" data-search="{{ s.name }} {{ s.host }} {{ s.port }}">
+                  <td>
+                    <input type="checkbox" name="server_ids" value="{{ s.id }}" aria-label="Select {{ s.name }}">
+                  </td>
+                  <td>
+                    <a class="server-identity" href="{{ url_for('server', server_id=s.id) }}"><span class="server-icon">{{ icon('server') }}</span><span><strong>{{ s.name }}</strong><small>{{ s.ssh_user or 'root' }} · SSH {{ s.port }}</small></span>
+                    </a>
+                  </td>
+                  <td class="mono dim">{{ s.host }}</td>
+                  <td class="mono dim">{{ s.last_backup or 'No backup yet' }}</td>
+                  <td>{{ status(s.status) }}</td>
+                  <td>
+                    <a class="row-arrow" href="{{ url_for('server', server_id=s.id) }}" aria-label="Manage {{ s.name }}">Manage {{ icon('arrow-right') }}</a>
+                  </td>
+                </tr>
+              {% endfor %}
+              <tr data-filter-empty hidden>
+                <td colspan="6" class="empty-cell">No servers match your search. Try a different name or status.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="table-count" data-table-count aria-live="polite">Showing {{ servers|length }} servers</div>
+      </section>
+      <details class="card bulk-settings" id="bulk-settings">
+        <summary>
+          <div><strong>Apply settings to multiple servers</strong><span>Update schedules, retention, or notifications in one go.</span>
+          </div>{{ icon('chevron') }}</summary>
+        <div class="bulk-content">
+          <div class="grid2">
+            <div class="subcard">
+              <label class="chk">
+                <input type="checkbox" name="push_schedule" checked> Backup schedule</label>{{ schedule_fields(settings.default_cron) }}<p class="hint">Workspace default: <code>{{ settings.default_cron }}</code>
+              </p>
+            </div>
+            <div class="subcard">
+              <label class="chk">
+                <input type="checkbox" name="push_retention" checked> Snapshots to keep</label>
+              <div class="row-fields">
+                <label>Recent<input type="number" min="0" name="keep_daily" value="{{ settings.keep_daily }}" required>
+                </label>
+                <label>Weekly<input type="number" min="0" name="keep_weekly" value="{{ settings.keep_weekly }}" required>
+                </label>
+                <label>Monthly<input type="number" min="0" name="keep_monthly" value="{{ settings.keep_monthly }}" required>
+                </label>
+              </div>
+              <p class="hint">Older backups are rotated automatically after a successful backup.</p>
+            </div>
+            <div class="subcard">
+              <label class="chk">
+                <input type="checkbox" name="push_notify"> Failure notifications</label>
+              <div class="grid2">
+                <label>Email<input type="email" name="notify_email" value="{{ settings.notify_email }}" autocomplete="off">
+                </label>
+                <label>Webhook URL<input type="url" name="notify_webhook" value="{{ settings.notify_webhook }}" autocomplete="off">
+                </label>
+              </div>
+              <p class="hint">Email requires a mail command on the server. Webhooks support Discord, Slack, and ntfy.</p>
+            </div>
+          </div>
+          <div class="button-row">
+            <button type="submit" id="apply-server-settings" disabled>{{ icon('check') }} Apply to selected servers</button><span class="hint" id="bulk-selection-note">Select at least one server above.</span>
+          </div>
+        </div>
+      </details>
+    </form>
   {% else %}
-  <tr><td colspan="5">No jobs yet.</td></tr>
-  {% endfor %}
-</table>
+    <section class="card empty-state" id="servers">
+      <div class="empty-icon">{{ icon('server') }}</div>
+      <h2>Your first server starts here.</h2>
+      <p>Link a web server to manage its backups, browse restore points, and keep your websites safe from one workspace.</p>
+      <a class="btn" href="{{ url_for('add_server') }}">{{ icon('plus') }} Link your first server</a>
+    </section>
+  {% endif %}
+  <div class="overview-bottom">
+    <section class="card">
+      <div class="section-head">
+        <h2>Recent activity</h2>
+        <a href="{{ url_for('jobs') }}">View all {{ icon('arrow-right') }}</a>
+      </div>
+      <div class="activity-list">
+        {% for j in jobs[:5] %}
+          <div class="activity-item"><span class="activity-symbol {{ j.status }}">{{ icon('check' if j.status == 'ok' else 'alert' if j.status == 'fail' else 'clock') }}</span>
+            <div class="activity-details">
+              <a href="{{ url_for('job', job_id=j.id) }}"><strong>{{ j.type|replace('_',' ')|capitalize|replace(' nas',' NAS') }} · {{ j.server_name or 'Workspace' }}</strong>
+              </a><small>Job #{{ j.id }} <span class="footer-dot">·</span> {{ j.created }}</small>
+            </div>{{ job_status(j.status) }}</div>
+        {% else %}<p class="empty-inline">Your backup activity will appear here after your first job.</p>{% endfor %}
+      </div>
+    </section>
+    <aside class="card">
+      <h2>Make yourself at home.</h2>
+      <p class="hint">A few useful places to start.</p>
+      <div class="quick-links">
+        <a class="quick-link" href="{{ url_for('add_server') }}">{{ icon('plus') }}<span><strong>Link a new server</strong><small>Expand your workspace</small></span>{{ icon('chevron') }}</a>
+        <a class="quick-link" href="{{ url_for('settings') }}#defaults">{{ icon('clock') }}<span><strong>Backup defaults</strong><small>Schedule and retention</small></span>{{ icon('chevron') }}</a>
+        <a class="quick-link" href="{{ url_for('settings') }}#notifications">{{ icon('activity') }}<span><strong>Set up notifications</strong><small>Know when a backup fails</small></span>{{ icon('chevron') }}</a>
+      </div>
+      <div class="storage-note">{{ icon('database') }}<div><strong>{{ 'Backup destination configured' if settings.syno_host and settings.syno_user else 'No backup destination yet' }}</strong><span>{{ settings.syno_host or 'Add your Synology NAS in Settings' }}</span>{% if settings.syno_host %}<span>{{ settings.syno_path }}</span>{% endif %}</div>
+      </div>
+    </aside>
+  </div>
 {% endblock %}

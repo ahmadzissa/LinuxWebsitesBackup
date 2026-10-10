@@ -13,28 +13,31 @@ ok()  { echo "${GRN}✔${OFF} $*"; }
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$SRC_DIR/webbackup" ] || die "webbackup script not found next to install.sh"
+[ -f "$SRC_DIR/archiveops.py" ] || die "archiveops.py not found next to install.sh"
 
-echo "Installing dependencies (rsync, ssh client, cron, curl, gzip)..."
+echo "Installing dependencies (rsync, ssh client, cron, curl, gzip, Python 3)..."
 if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync openssh-client cron curl gzip coreutils >/dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync openssh-client cron curl gzip coreutils python3 >/dev/null
     systemctl enable --now cron >/dev/null 2>&1 || true
 elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q rsync openssh-clients cronie curl gzip coreutils >/dev/null
+    dnf install -y -q rsync openssh-clients cronie curl gzip coreutils python3 >/dev/null
     systemctl enable --now crond >/dev/null 2>&1 || true
 elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q rsync openssh-clients cronie curl gzip coreutils >/dev/null
+    yum install -y -q rsync openssh-clients cronie curl gzip coreutils python3 >/dev/null
     systemctl enable --now crond >/dev/null 2>&1 || true
 elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache -q rsync openssh-client dcron curl gzip coreutils bash flock
+    apk add --no-cache -q rsync openssh-client dcron curl gzip coreutils bash flock python3
     rc-update add dcron default >/dev/null 2>&1 || true
     /etc/init.d/dcron start >/dev/null 2>&1 || true
 else
-    echo "Unknown package manager — make sure rsync, ssh, cron, curl are installed."
+    echo "Unknown package manager — make sure rsync, ssh, cron, curl and Python 3 are installed."
 fi
+command -v python3 >/dev/null 2>&1 || die "Python 3 is required for archive indexing and selected restores."
 ok "Dependencies ready."
 
 install -m 755 "$SRC_DIR/webbackup" /usr/local/bin/webbackup
+install -D -m 755 "$SRC_DIR/archiveops.py" /usr/local/lib/webbackup/archiveops.py
 mkdir -p /etc/webbackup /var/lib/webbackup /var/backups/webbackup
 ok "Installed /usr/local/bin/webbackup"
 

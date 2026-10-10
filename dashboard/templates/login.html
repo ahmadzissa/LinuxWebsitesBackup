@@ -1,12 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Login{% endblock %}
+{% from "_ui.html" import icon %}
+{% block title %}Sign in{% endblock %}
 {% block content %}
-<div class="card narrow">
-  <h1>Sign in</h1>
-  <form method="post">
-    <label>Username <input name="username" autofocus required></label>
-    <label>Password <input name="password" type="password" required></label>
-    <button type="submit">Sign in</button>
-  </form>
-</div>
+  <a class="brand login-brand" href="{{ url_for('index') }}"><span class="brand-mark">{{ icon('layers') }}</span><span>webbackup<span class="brand-caption">BACKUP WORKSPACE</span></span>
+  </a>
+  <div class="card login-card"><span class="eyebrow">WELCOME BACK</span>
+    <h1>Your backups, in good hands.</h1>
+    <p class="hint">Sign in to manage your servers and restore points.</p>
+    <form method="post">
+      <label>Username<input name="username" autofocus required autocomplete="username" placeholder="Enter your username">
+      </label>
+      <label>Password<input name="password" type="password" required autocomplete="current-password" placeholder="Enter your password">
+      </label>
+      <button type="submit" class="full-width">Sign in to your workspace {{ icon('arrow-right') }}</button>
+    </form>
+  </div>
+  <p class="login-footnote">{{ icon('lock') }} Your self-hosted backup workspace.</p>
 {% endblock %}

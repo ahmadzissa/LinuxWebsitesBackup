@@ -1,20 +1,64 @@
 {% extends "base.html" %}
-{% block title %}Jobs{% endblock %}
+{% from "_ui.html" import icon, job_status %}
+{% block title %}Activity{% endblock %}
 {% block content %}
-<h1>Jobs</h1>
-<table>
-  <tr><th>#</th><th>Server</th><th>Type</th><th>Status</th><th>Started</th><th>Finished</th></tr>
-  {% for j in jobs %}
-  <tr>
-    <td><a href="{{ url_for('job', job_id=j.id) }}">{{ j.id }}</a></td>
-    <td>{{ j.server_name }}</td>
-    <td>{{ j.type }}</td>
-    <td><span class="pill {{ j.status }}">{{ j.status }}</span></td>
-    <td class="mono">{{ j.created }}</td>
-    <td class="mono">{{ j.finished or '—' }}</td>
-  </tr>
-  {% else %}
-  <tr><td colspan="6">No jobs yet.</td></tr>
-  {% endfor %}
-</table>
+  <div class="page-head">
+    <div><span class="eyebrow">WORKSPACE HISTORY</span>
+      <h1>Activity</h1>
+      <p>Every backup, restore, and setup job. Open a job to see its full log.</p>
+    </div>
+    <a class="btn secondary" href="{{ url_for('jobs') }}">{{ icon('refresh') }} Refresh</a>
+  </div>
+  <div class="card flush" data-filter-table data-table-noun="jobs">
+    <div class="section-head">
+      <h2>Job history <span class="count-badge">{{ jobs|length }}</span>
+      </h2>
+    </div>
+    <div class="table-toolbar">
+      <label class="search-field">{{ icon('search') }}<input type="search" data-table-search aria-label="Search activity" placeholder="Search jobs or servers…" autocomplete="off">
+      </label>
+      <select class="filter-select" data-table-filter aria-label="Filter jobs by status">
+        <option value="">All statuses</option>
+        <option value="running">Running</option>
+        <option value="ok">Completed</option>
+        <option value="fail">Failed</option>
+      </select>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Job</th>
+            <th>Server</th>
+            <th>Action</th>
+            <th>Status</th>
+            <th>Started</th>
+            <th>Finished</th>
+            <th>Log</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for j in jobs %}<tr data-filter-row data-status="{{ j.status }}" data-search="{{ j.id }} {{ j.server_name }} {{ j.type }}">
+              <td>
+                <a href="{{ url_for('job', job_id=j.id) }}">#{{ j.id }}</a>
+              </td>
+              <td>{{ j.server_name or 'Workspace' }}</td>
+              <td>{{ j.type|replace('_',' ')|capitalize|replace(' nas',' NAS') }}</td>
+              <td>{{ job_status(j.status) }}</td>
+              <td class="mono dim">{{ j.created }}</td>
+              <td class="mono dim">{{ j.finished or '—' }}</td>
+              <td>
+                <a class="row-arrow" href="{{ url_for('job', job_id=j.id) }}" aria-label="View log for job {{ j.id }}">{{ icon('arrow-right') }}</a>
+              </td>
+          </tr>{% else %}<tr>
+              <td colspan="7" class="empty-cell">No jobs yet. Your first backup or server setup will appear here.</td>
+          </tr>{% endfor %}
+          <tr data-filter-empty hidden>
+            <td colspan="7" class="empty-cell">No jobs match your search.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-count" data-table-count aria-live="polite">Showing {{ jobs|length }} jobs</div>
+  </div>
 {% endblock %}

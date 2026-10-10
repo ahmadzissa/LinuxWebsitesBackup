@@ -1,123 +1,128 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon %}
 {% block title %}Settings{% endblock %}
 {% block content %}
-<h1>Settings</h1>
-
-<div class="card">
-  <h2>Synology NAS connection</h2>
-  <p class="hint">Used to configure every server you link. No NAS password is
-    stored — it's asked for once when linking a server, only to authorize that
-    server's key.</p>
-  <form method="post" autocomplete="off">
-    <div class="grid2">
-      <label>NAS address (DDNS name / IP / Tailscale IP)
-        <input name="syno_host" value="{{ s.syno_host }}" class="mono"></label>
-      <label>NAS SSH port
-        <input name="syno_port" value="{{ s.syno_port }}" size="6"></label>
-      <label>NAS backup user
-        <input name="syno_user" value="{{ s.syno_user }}"></label>
-      <label>Backup folder on NAS
-        <input name="syno_path" value="{{ s.syno_path }}" class="mono"></label>
-      <label>NAS backup user password (optional)
-        {% if saved.syno_pass %}<span class="pill ok">✔ saved</span>{% endif %}
-        <input name="syno_pass" type="password" autocomplete="new-password"
-               placeholder="{{ '••••••••  saved — type a new one to replace, or the word clear to remove' if saved.syno_pass else '' }}"></label>
+  <div class="page-head">
+    <div><span class="eyebrow">WORKSPACE PREFERENCES</span>
+      <h1>Settings</h1>
+      <p>A backup destination, sensible defaults, and a heads-up when you need it.</p>
     </div>
-    <p class="hint">If saved, it's used automatically when linking servers and in
-      "Complete setup" — no more typing it per server. Leave empty if you prefer
-      to enter it each time (slightly safer: nothing NAS-related stored on the
-      panel).</p>
-    <h2>Tailscale auto-setup (optional but recommended)</h2>
-    <p class="hint">Paste a Tailscale <b>auth key</b> here and the enroll
-      command will install + connect Tailscale on every new server
-      automatically — true one-command setup. Create it at
-      <b>login.tailscale.com → Settings → Keys → Generate auth key</b>:
-      enable <b>Reusable</b>, set the longest expiry (the key's expiry only
-      limits how long you can enroll new servers with it, not the servers
-      themselves — but still disable key expiry per machine afterwards).</p>
-    <label>Tailscale auth key (starts with tskey-auth-…)
-      {% if saved.ts_authkey %}
-        {% if ts_invalid %}
-          <span class="pill fail">⚠ NOT a valid key — paste a real tskey-auth-… key</span>
-        {% else %}
-          <span class="pill ok">✔ key saved</span>
-          {% if ts_note %}<span class="pill {{ 'fail' if ts_urgent else '' }}">{{ ts_note }}</span>{% endif %}
-        {% endif %}
-      {% endif %}
-      <input name="ts_authkey" class="mono" autocomplete="off"
-             placeholder="{{ 'paste a new key to replace the saved one, or the word clear to remove' if saved.ts_authkey else 'tskey-auth-xxxxxxxxxxxx' }}"></label>
-    {% if saved.ts_authkey %}
-    <p class="hint">Currently saved: <code class="mono">{{ ts_hint }}</code></p>
-    {% endif %}
-    <label>Key expiry date (from the Tailscale dialog when you generated it)
-      <input name="ts_expiry" type="date" value="{{ s.ts_expiry }}"></label>
-    <h2>Notifications on backup failure (sent by the panel, for ALL servers)</h2>
-    <p class="hint">The panel watches every server (every 15 min + instantly
-      when a panel-run backup fails) and sends the alert itself — servers need
-      no mail setup. Webhook works with zero config (Discord, Slack,
-      ntfy.sh…). For email, also fill the SMTP fields below.</p>
-    <div class="grid2">
-      <label>Notify email
-        <input name="notify_email" value="{{ s.notify_email }}"
-               placeholder="you@example.com" autocomplete="off"></label>
-      <label>Webhook URL
-        <input name="notify_webhook" value="{{ s.notify_webhook }}" class="mono"
-               placeholder="https://discord.com/api/webhooks/…  or  https://ntfy.sh/your-topic" autocomplete="off"></label>
-      <label>SMTP host (for email; e.g. smtp.gmail.com)
-        <input name="smtp_host" value="{{ s.smtp_host }}" class="mono" autocomplete="off"></label>
-      <label>SMTP port
-        <input name="smtp_port" value="{{ s.smtp_port }}" size="6"></label>
-      <label>SMTP username
-        <input name="smtp_user" value="{{ s.smtp_user }}" autocomplete="off"></label>
-      <label>SMTP password {% if saved.smtp_pass %}<span class="pill ok">✔ saved</span>{% endif %}
-        <input name="smtp_pass" type="password" autocomplete="new-password"
-               placeholder="{{ 'saved — type new to replace, clear to remove' if saved.smtp_pass else 'app password' }}"></label>
+  </div>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <a href="#storage">{{ icon('database') }} Backup destination</a>
+      <a href="#network">{{ icon('globe') }} Network</a>
+      <a href="#notifications">{{ icon('activity') }} Notifications</a>
+      <a href="#defaults">{{ icon('clock') }} Backup defaults</a>
+      <a href="#updates">{{ icon('refresh') }} Updates</a>
+      <a href="#ssh-key">{{ icon('terminal') }} SSH public key</a>
+    </nav>
+    <div class="settings-content">
+      <form method="post" autocomplete="off">
+        <section class="card" id="storage">
+          <div class="card-title">{{ icon('database') }}<h2>Backup destination</h2>
+          </div>
+          <p class="hint">Your Synology NAS stores the backups from every linked server.</p>
+          <div class="grid2">
+            <label>NAS address<input name="syno_host" value="{{ s.syno_host }}" class="mono" placeholder="DDNS name, IP, or Tailscale IP">
+            </label>
+            <label>SSH port<input name="syno_port" value="{{ s.syno_port }}" type="number" min="1" max="65535">
+            </label>
+            <label>Backup user<input name="syno_user" value="{{ s.syno_user }}" placeholder="e.g. vpsbackup">
+            </label>
+            <label>Backup folder<input name="syno_path" value="{{ s.syno_path }}" class="mono" placeholder="/volume1/WebBackups">
+            </label>
+          </div>
+          <label>Backup user password <span class="dim">(optional)</span> {% if saved.syno_pass %}<span class="pill ok">Saved</span>{% endif %}<input name="syno_pass" type="password" autocomplete="new-password" placeholder="{{ 'Leave blank to keep the saved password' if saved.syno_pass else 'Enter once during setup, or save it here' }}">
+          </label>
+          <p class="hint">A saved password is used when linking servers or completing setup. Leave blank to keep an existing saved password; type <code>clear</code> to remove it.</p>
+        </section>
+        <section class="card" id="network">
+          <div class="card-title">{{ icon('globe') }}<h2>Tailscale connection</h2>
+          </div>
+          <p class="hint">Optionally install and connect Tailscale when a new server enrolls. This helps your servers reach a NAS on a private network.</p>
+          <label>Auth key {% if saved.ts_authkey %}<span class="pill {{ 'fail' if ts_invalid else 'ok' }}">{{ 'Invalid key' if ts_invalid else 'Saved' }}</span>{% endif %}<input name="ts_authkey" type="password" class="mono" autocomplete="new-password" placeholder="{{ 'Leave blank to keep the saved key' if saved.ts_authkey else 'tskey-auth-…' }}">
+          </label>
+          {% if ts_note %}<p class="hint"><span class="pill {{ 'fail' if ts_urgent else '' }}">{{ ts_note }}</span>
+          </p>{% endif %}
+          <label>Auth key expiry date<input name="ts_expiry" type="date" value="{{ s.ts_expiry }}">
+          </label>
+          <details>
+            <summary>How to create an auth key</summary>
+            <p class="hint" style="margin-top:12px">In the Tailscale admin console, go to Settings → Keys → Generate auth key. Enable Reusable, choose an expiry, and paste the <code>tskey-auth-…</code> key here. Key expiry affects new enrollments. Manage each machine's key expiry in Tailscale separately. Type <code>clear</code> to remove a saved key.</p>
+          </details>
+        </section>
+        <section class="card" id="notifications">
+          <div class="card-title">{{ icon('activity') }}<h2>Failure notifications</h2>
+          </div>
+          <p class="hint">The dashboard checks server status every 15 minutes and alerts you when a backup fails. Backups started here report failures immediately.</p>
+          <div class="grid2">
+            <label>Email address<input type="email" name="notify_email" value="{{ s.notify_email }}" placeholder="you@example.com" autocomplete="off">
+            </label>
+            <label>Webhook URL<input type="url" name="notify_webhook" value="{{ s.notify_webhook }}" class="mono" placeholder="Discord, Slack, or ntfy webhook" autocomplete="off">
+            </label>
+          </div>
+          <div class="form-section">
+            <h3>Email delivery</h3>
+            <p class="hint">Set up SMTP to send email alerts. A webhook works without SMTP.</p>
+            <div class="grid2">
+              <label>SMTP host<input name="smtp_host" value="{{ s.smtp_host }}" placeholder="smtp.example.com" autocomplete="off">
+              </label>
+              <label>SMTP port<input name="smtp_port" value="{{ s.smtp_port }}" type="number" min="1" max="65535">
+              </label>
+              <label>SMTP username<input name="smtp_user" value="{{ s.smtp_user }}" autocomplete="off">
+              </label>
+              <label>SMTP password {% if saved.smtp_pass %}<span class="pill ok">Saved</span>{% endif %}<input name="smtp_pass" type="password" autocomplete="new-password" placeholder="{{ 'Leave blank to keep the saved password' if saved.smtp_pass else 'App password' }}">
+              </label>
+              <label>Sender email <span class="dim">(optional)</span>
+                <input type="email" name="smtp_from" value="{{ s.smtp_from }}" placeholder="backups@example.com">
+              </label>
+            </div>
+            <p class="hint">Type <code>clear</code> in the password field to remove a saved password.</p>
+          </div>
+        </section>
+        <section class="card" id="defaults">
+          <div class="card-title">{{ icon('clock') }}<h2>Backup defaults</h2>
+          </div>
+          <p class="hint">Applied to newly linked servers. To update existing servers, select them on the Overview page and apply settings.</p>
+          <label>Default schedule<input name="default_cron" value="{{ s.default_cron }}" class="mono" placeholder="30 3 * * *">
+          </label>
+          <p class="hint">Cron format: minute, hour, day of month, month, day of week. <code>30 3 * * *</code> runs daily at 03:30 in each server's timezone.</p>
+          <h3>Snapshots to keep</h3>
+          <div class="row-fields">
+            <label>Recent<input name="keep_daily" value="{{ s.keep_daily }}" type="number" min="0" required>
+            </label>
+            <label>Weekly<input name="keep_weekly" value="{{ s.keep_weekly }}" type="number" min="0" required>
+            </label>
+            <label>Monthly<input name="keep_monthly" value="{{ s.keep_monthly }}" type="number" min="0" required>
+            </label>
+          </div>
+        </section>
+        <div class="settings-savebar">
+          <button type="submit">{{ icon('check') }} Save settings</button><span class="hint">Save changes to your workspace preferences.</span>
+        </div>
+      </form>
+      <section class="card" id="updates">
+        <div class="card-title">{{ icon('refresh') }}<h2>Dashboard updates</h2>
+        </div>
+        <p class="hint">Install project files or an update bundle. The dashboard restarts after installation; your settings, servers, and SSH keys are retained.</p>
+        <form method="post" action="{{ url_for('update_from_local') }}" data-confirm="Apply files from the project folder and restart the dashboard?">
+          <label>Project folder on this server<input name="repo_dir" value="{{ s.repo_dir }}" class="mono" placeholder="/home/serverbackup/htdocs/serverbackup.example.com">
+          </label>
+          <button type="submit" class="secondary">Apply project update</button>
+        </form>
+        <hr class="divider">
+        <form method="post" action="{{ url_for('update_panel') }}" enctype="multipart/form-data" data-confirm="Install this update bundle and restart the dashboard?">
+          <label>Update bundle<input type="file" name="package" accept=".gz,.tgz" required>
+          </label>
+          <p class="hint">Upload the complete <code>LinuxWebsitesBackup.tar.gz</code> project bundle.</p>
+          <button type="submit" class="secondary">{{ icon('download') }} Upload &amp; install</button>
+        </form>
+      </section>
+      <section class="card" id="ssh-key">
+        <div class="card-title">{{ icon('terminal') }}<h2>Dashboard SSH public key</h2>
+        </div>
+        <p class="hint">Installed automatically when linking with a password. For manual setup, append this line to <code>/root/.ssh/authorized_keys</code> on your server.</p><pre class="log small" id="public-key">{{ pubkey or '(key not generated yet — run the installer)' }}</pre>{% if pubkey %}<button type="button" class="secondary small" data-copy-target="public-key">{{ icon('copy') }} Copy public key</button>{% endif %}</section>
     </div>
-    <h2>Defaults for newly linked servers</h2>
-    <div class="grid2">
-      <label>Default schedule (cron)
-        <input name="default_cron" value="{{ s.default_cron }}" class="mono"></label>
-      <label>Keep recent
-        <input name="keep_daily" value="{{ s.keep_daily }}" size="4"></label>
-      <label>Keep weekly
-        <input name="keep_weekly" value="{{ s.keep_weekly }}" size="4"></label>
-      <label>Keep monthly
-        <input name="keep_monthly" value="{{ s.keep_monthly }}" size="4"></label>
-    </div>
-    <button type="submit">Save settings</button>
-  </form>
-</div>
-
-<div class="card">
-  <h2>Install an update</h2>
-  <p class="hint"><b>One click:</b> upload the changed project files to the
-    folder below however you like (PhpStorm, SFTP, git…), then press the
-    button — the panel applies them and restarts itself. Settings, servers,
-    login and keys are always kept.</p>
-  <form method="post" action="{{ url_for('update_from_local') }}"
-        onsubmit="return confirm('Apply the files from the project folder and restart the panel?')">
-    <label>Project folder on this server
-      <input name="repo_dir" value="{{ s.repo_dir }}" class="mono"
-             placeholder="/home/serverbackup/htdocs/serverbackup.areviewsapp.com"></label>
-    <button type="submit">⟳ Apply update now</button>
-  </form>
-  <hr style="border:none;border-top:1px solid #dde4ec;margin:16px 0">
-  <p class="hint"><b>Or upload a bundle:</b> a full
-    <code>LinuxWebsitesBackup.tar.gz</code> file.</p>
-  <form method="post" action="{{ url_for('update_panel') }}"
-        enctype="multipart/form-data"
-        onsubmit="return confirm('Install this update and restart the panel?')">
-    <label>Update bundle (.tar.gz)
-      <input type="file" name="package" accept=".gz,.tgz"></label>
-    <button type="submit">Upload &amp; install update</button>
-  </form>
-</div>
-
-<div class="card">
-  <h2>Dashboard SSH public key</h2>
-  <p class="hint">Installed automatically when you link a server with a
-    password. For servers where you prefer to add it yourself, append this line
-    to <code>/root/.ssh/authorized_keys</code>:</p>
-  <pre class="log small">{{ pubkey or '(key not generated yet — run the installer)' }}</pre>
-</div>
+  </div>
 {% endblock %}

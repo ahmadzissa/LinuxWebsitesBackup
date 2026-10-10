@@ -17,7 +17,7 @@ APP="/opt/webbackup-dashboard"
 
 cp "$SRC/dashboard/app.py" "$SRC/dashboard/sshops.py" "$APP/"
 cp -r "$SRC/dashboard/templates" "$SRC/dashboard/static" "$APP/"
-cp "$SRC/agent/webbackup" "$SRC/agent/install.sh" "$APP/agent/"
+cp "$SRC/agent/webbackup" "$SRC/agent/install.sh" "$SRC/agent/archiveops.py" "$APP/agent/"
 ok "Files updated (config, database and keys untouched)."
 
 # install any new Python dependencies quietly (no-op most of the time)

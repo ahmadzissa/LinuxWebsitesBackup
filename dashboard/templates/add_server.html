@@ -1,53 +1,60 @@
 {% extends "base.html" %}
-{% block title %}Add a server{% endblock %}
+{% from "_ui.html" import icon %}
+{% block title %}Link a server{% endblock %}
 {% block content %}
-<h1>Add a server</h1>
-{% if not nas_ready %}
-<div class="flash">⚠ Set your Synology NAS connection in
-  <a href="{{ url_for('settings') }}">Settings</a> first — servers are
-  configured to back up to it automatically.</div>
-{% endif %}
-
-<div class="card">
-  <h2>Option A — run one command on the server (recommended)</h2>
-  <p>SSH into the web server and paste this as root. It downloads the backup
-  agent <b>from this panel</b>, installs it, connects the server to the panel,
-  and it appears on the Servers page automatically:</p>
-  <pre class="log" id="enroll-cmd">curl -fsSL {{ panel_url }}/enroll.sh | sudo bash -s -- {{ panel_url }} {{ token }}</pre>
-  <button type="button" id="copy-btn" onclick="
-    navigator.clipboard.writeText(document.getElementById('enroll-cmd').textContent.trim())
-      .then(function(){ var b=document.getElementById('copy-btn');
-        b.textContent='✔ Copied!'; setTimeout(function(){ b.textContent='📋 Copy command'; }, 2000); });
-  ">📋 Copy command</button>
-  <p class="hint">
-    If a Tailscale auth key is saved in <a href="{{ url_for('settings') }}">Settings</a>,
-    this command also installs and connects Tailscale on the server
-    automatically (needed to reach the NAS) — nothing else to do on the server.<br>
-    If the server's SSH runs on a non-standard port, append the IP and port:
-    <code>… {{ token }} &lt;server-ip&gt; &lt;ssh-port&gt;</code><br>
-    When it finishes, come back here, open the server and click
-    <b>Complete setup</b> (you'll enter the NAS password once).
-  </p>
-</div>
-
-<div class="card">
-  <h2>Option B — link with a root password</h2>
-  <p>The panel connects to the server with a password <b>once</b> (never
-  stored) and does everything itself, including the agent install.</p>
-  <form method="post">
-    <div class="grid2">
-      <label>Display name <input name="name" placeholder="e.g. web1"></label>
-      <label>Host / IP <input name="host" required class="mono"></label>
-      <label>SSH port <input name="port" value="22" size="5"></label>
-      <label>SSH user <input name="ssh_user" value="root"></label>
-      <label>SSH password (used once, not stored)
-        <input name="password" type="password" required
-               autocomplete="new-password"></label>
-      <label>NAS password for the backup user (used once, not stored;
-        empty = add key manually)
-        <input name="nas_password" type="password" autocomplete="new-password"></label>
+  <div class="breadcrumb">
+    <a href="{{ url_for('index') }}#servers">Servers</a>{{ icon('chevron') }}<span>Link a server</span>
+  </div>
+  <div class="page-head">
+    <div><span class="eyebrow">GROW YOUR WORKSPACE</span>
+      <h1>Bring your server on board.</h1>
+      <p>Choose a setup method. We'll take care of the backup agent and connection.</p>
     </div>
-    <button type="submit">Link server</button>
-  </form>
-</div>
+  </div>
+  {% if not nas_ready %}<div class="flash">{{ icon('alert') }}<span>Configure your <a href="{{ url_for('settings') }}#storage">NAS backup destination</a> before completing server setup.</span>
+  </div>{% endif %}
+  <div class="card">
+    <div class="card-title">{{ icon('terminal') }}<h2>Run a command on your server <span class="recommended">Recommended</span>
+      </h2>
+    </div>
+    <p class="hint">Sign in to your web server over SSH, then paste the command below as root.</p>
+    <div class="step-list"><span class="step-item"><span class="step-number">1</span> Copy the command</span><span class="step-item"><span class="step-number">2</span> Run on your server</span><span class="step-item"><span class="step-number">3</span> Complete NAS setup</span>
+    </div>
+    <pre class="log" id="enroll-cmd">curl -fsSL {{ panel_url }}/enroll.sh | sudo bash -s -- {{ panel_url }} {{ token }}</pre>
+    <div class="button-row">
+      <button type="button" data-copy-target="enroll-cmd">{{ icon('copy') }} Copy command</button>
+      <a class="btn secondary" href="{{ url_for('index') }}#servers">Check for your server {{ icon('arrow-right') }}</a>
+    </div>
+    <p class="hint" style="margin-top:18px">Once the command finishes, open your server in the workspace and choose <strong>Complete setup</strong> to authorize its NAS connection.</p>
+    <details>
+      <summary>Custom SSH ports and Tailscale</summary>
+      <p class="hint" style="margin-top:12px">For a custom SSH address or port, append <code>&lt;server-ip&gt; &lt;ssh-port&gt;</code> to the command. If a Tailscale auth key is saved in <a href="{{ url_for('settings') }}#network">Settings</a>, the command also installs and connects Tailscale automatically.</p>
+    </details>
+  </div>
+  <div class="card">
+    <div class="card-title">{{ icon('server') }}<h2>Connect with an SSH password</h2>
+    </div>
+    <p class="hint">Prefer to set up from here? The dashboard connects once, installs the agent, and authorizes its SSH key. Server passwords are never stored.</p>
+    <form method="post">
+      <div class="grid2">
+        <label>Display name<input name="name" placeholder="e.g. Production web server">
+        </label>
+        <label>Host or IP address<input name="host" required class="mono" placeholder="203.0.113.10">
+        </label>
+        <label>SSH port<input name="port" value="22" type="number" min="1" max="65535" required>
+        </label>
+        <label>SSH user<input name="ssh_user" value="root" autocomplete="off">
+        </label>
+        <label>SSH password<input name="password" type="password" required autocomplete="new-password" placeholder="Used once, never stored">
+        </label>
+        <label>NAS backup user password <span class="dim">(optional)</span>
+          <input name="nas_password" type="password" autocomplete="new-password" placeholder="Leave blank to use the saved password">
+        </label>
+      </div>
+      <p class="hint">Without a saved or entered NAS password, authorize the server's NAS SSH key manually.</p>
+      <div class="form-actions">
+        <button type="submit">{{ icon('plus') }} Link server</button><span class="hint">Follow setup progress in the live job log.</span>
+      </div>
+    </form>
+  </div>
 {% endblock %}

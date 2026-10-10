@@ -1,140 +1,176 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon %}
 {% block title %}{{ snap }} · {{ s.name }}{% endblock %}
 {% block content %}
-<div class="row-head">
-  <h1>Snapshot {{ snap }} <span class="mono dim">{{ s.name }} · {{ s.host }}</span></h1>
-  <a class="btn" href="{{ url_for('server', server_id=s.id) }}">← Back to server</a>
-</div>
-
-{% if error %}
-<div class="flash">⚠ Could not read the snapshot from the NAS: {{ error }}</div>
-{% else %}
-
-<div class="card">
-  <h2>🌐 Websites (files)</h2>
-  <p class="hint">"Restore files" puts this website's files back exactly as
-    they were in this snapshot — only this site's files change; its database
-    and everything else stay as they are now.</p>
-  <table>
-    <tr><th>Website</th><th>URL</th><th></th><th></th></tr>
-    {% for site in sites %}
-    <tr>
-      <td><b>{{ site.label }}</b></td>
-      <td><a class="mono" href="https://{{ site.url }}" target="_blank">{{ site.url }}</a></td>
-      <td><a class="btn small"
-             href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site.arch) }}">⬇ Download</a></td>
-      <td>
-        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-              onsubmit="return confirm('Restore the FILES of {{ site.url }} from {{ snap }}? Current files of this site will be overwritten (database not touched).')
-                     && confirm('Second confirmation: overwrite the live files of {{ site.url }} with the {{ snap }} version?')">
-          <input type="hidden" name="snapshot" value="{{ snap }}">
-          <input type="hidden" name="item" value="{{ site.arch }}">
-          <button name="action" value="restore_site" class="small danger">↩ Restore files</button>
-        </form>
-      </td>
-    </tr>
-    {% else %}
-    <tr><td colspan="4">No named websites detected
-      {% if sys_sites %}(see "Other folders" below){% endif %} — friendly names
-      need a snapshot made by agent v1.4.1+ .</td></tr>
-    {% endfor %}
-  </table>
-</div>
-
-{% if sys_sites %}
-<div class="card">
-  <h2>🗂 Other backed-up folders (system / non-website)</h2>
-  <table>
-    <tr><th>Folder</th><th></th><th></th></tr>
-    {% for site in sys_sites %}
-    <tr>
-      <td class="mono">{{ site.path or site.label }}</td>
-      <td><a class="btn small"
-             href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site.arch) }}">⬇ Download</a></td>
-      <td>
-        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-              onsubmit="return confirm('Restore {{ site.path or site.label }} from {{ snap }}? Current contents will be overwritten.')
-                     && confirm('Second confirmation: overwrite {{ site.path or site.label }} with the {{ snap }} version?')">
-          <input type="hidden" name="snapshot" value="{{ snap }}">
-          <input type="hidden" name="item" value="{{ site.arch }}">
-          <button name="action" value="restore_site" class="small danger">↩ Restore files</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %}
-
-<div class="card">
-  <h2>🗄 Databases</h2>
-  <p class="hint">"Restore database" replaces only that database with the
-    snapshot version — website files and other databases are not touched.
-    Restore a site's files AND its database = use both buttons.</p>
-  <table>
-    <tr><th>Database</th><th></th><th></th></tr>
-    {% for db in dbs %}
-    <tr>
-      <td class="mono">{{ db }}</td>
-      <td><a class="btn small"
-             href="{{ url_for('snapshot_db_download', server_id=s.id, snap=snap, dbname=db) }}">⬇ Download</a></td>
-      <td>
-        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-              onsubmit="return confirm('Restore database {{ db }} from {{ snap }}? Its current content will be replaced.')
-                     && confirm('Second confirmation: overwrite the LIVE database {{ db }} with the {{ snap }} version?')">
-          <input type="hidden" name="snapshot" value="{{ snap }}">
-          <input type="hidden" name="db" value="{{ db }}">
-          <button name="action" value="restore_db" class="small danger">↩ Restore database</button>
-        </form>
-      </td>
-    </tr>
-    {% else %}
-    <tr><td colspan="3">No database dumps in this snapshot.</td></tr>
-    {% endfor %}
-  </table>
-</div>
-
-{% if sites or sys_sites %}
-<div class="card">
-  <h2>📄 Restore a single file</h2>
-  <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-        onsubmit="return confirm('Restore this one file from {{ snap }}, overwriting the current version?')">
-    <div class="row-fields">
-      <label>From website
-        <select name="item">
-          {% for site in sites %}<option value="{{ site.arch }}">{{ site.label }} — {{ site.url }}</option>{% endfor %}
-          {% for site in sys_sites %}<option value="{{ site.arch }}">{{ site.path or site.label }}</option>{% endfor %}
-        </select></label>
-      <label>Path inside the archive
-        <input name="fpath" class="mono" required
-               placeholder="e.g. mysite.com/config/app.php"></label>
+  <div class="breadcrumb">
+    <a href="{{ url_for('index') }}#servers">Servers</a>{{ icon('chevron') }}<a href="{{ url_for('server', server_id=s.id) }}">{{ s.name }}</a>{{ icon('chevron') }}<span>Snapshot</span>
+  </div>
+  <div class="page-head">
+    <div><span class="eyebrow">RESTORE POINT</span>
+      <h1>Explore your backup.</h1>
+      <p><span class="mono">{{ snap }}</span><span class="footer-dot">·</span>{{ s.name }}<span class="footer-dot">·</span>{{ s.host }}</p>
     </div>
-    <input type="hidden" name="snapshot" value="{{ snap }}">
-    <button name="action" value="restore_file" class="small">↩ Restore this file only</button>
-    <p class="hint">Path starts with the site's top folder (open the downloaded
-      archive to see it). Needs a snapshot made by agent v1.4.1+ .</p>
-  </form>
-</div>
-{% endif %}
-
-<div class="card">
-  <h2>⚙ Configs &amp; other files — download</h2>
-  <table>
-    <tr><th>File</th><th>Size</th><th></th></tr>
-    {% for f in others %}
-    <tr>
-      <td class="mono">{{ f.path }}</td>
-      <td class="mono">{{ f.size }}</td>
-      <td><a class="btn small"
-             href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f=f.path) }}">⬇ Download</a></td>
-    </tr>
-    {% else %}
-    <tr><td colspan="3">Nothing else in this snapshot.</td></tr>
-    {% endfor %}
-  </table>
-  <p class="hint">Website archives and database dumps are downloadable from
-    their sections above (databases: download the dump from the bundle or the
-    files listing).</p>
-</div>
-{% endif %}
+    <a class="btn secondary" href="{{ url_for('server', server_id=s.id) }}">{{ icon('arrow-left') }} Back to server</a>
+  </div>
+  {% if error %}<div class="flash">{{ icon('alert') }}<span>Could not read the snapshot from the NAS: {{ error }}</span>
+  </div>{% else %}
+    <div class="flash info-banner">{{ icon('info') }}<span>Browse and download your backup freely. Restoring replaces live content and requires confirmation.</span>
+    </div>
+    <nav class="tabs" data-tab-group aria-label="Snapshot contents">
+      <a href="#websites" data-tab="websites">{{ icon('globe') }} Websites <span class="count-badge">{{ sites|length }}</span>
+      </a>
+      <a href="#databases" data-tab="databases">{{ icon('database') }} Databases <span class="count-badge">{{ dbs|length }}</span>
+      </a>{% if sys_sites %}<a href="#folders" data-tab="folders">{{ icon('folder') }} Other folders</a>{% endif %}<a href="#configs" data-tab="configs">{{ icon('settings') }} Configs &amp; files</a>
+    </nav>
+    <section id="websites">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2>Website files</h2>
+            <p class="hint">Select individual files to recover, or download the complete website archive.</p>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Website &amp; destination</th>
+                <th>Browse</th>
+                <th>Download</th>
+                <th>Restore all files</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for site in sites %}<tr>
+                  <td>
+                    <a href="https://{{ site.url }}" target="_blank" rel="noopener"><strong>{{ site.label }}</strong>
+                    </a>
+                    <div class="mono dim">{{ site.path or 'Original path unavailable' }}</div>
+                  </td>
+                  <td>
+                    <a class="btn small" href="{{ url_for('snapshot_files', server_id=s.id, snap=snap, arch=site.arch) }}">{{ icon('folder') }} Browse &amp; select</a>
+                  </td>
+                  <td>
+                    <a class="btn small secondary" href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site.arch) }}">{{ icon('download') }} Download</a>
+                  </td>
+                  <td>
+                    <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" data-confirm="Restore all files of {{ site.url }} from {{ snap }}? Current website files will be overwritten. Its database will remain unchanged." data-confirm-second="Overwrite the live website files of {{ site.url }} with the {{ snap }} version?">
+                      <input type="hidden" name="snapshot" value="{{ snap }}">
+                      <input type="hidden" name="item" value="{{ site.arch }}">
+                      <button name="action" value="restore_site" class="small danger">{{ icon('backup') }} Restore all</button>
+                    </form>
+                  </td>
+              </tr>{% else %}<tr>
+                  <td colspan="4" class="empty-cell">No named websites in this snapshot.{% if sys_sites %} Check the Other folders section.{% endif %}</td>
+              </tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="hint" style="margin-top:16px;margin-bottom:0">Restoring website files leaves its database unchanged. Restore a database separately if you need both.</p>
+      </div>
+    </section>
+    <section id="databases">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2>Database backups</h2>
+            <p class="hint">Download a dump or replace one database with its saved version.</p>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Database</th>
+                <th>Download dump</th>
+                <th>Restore database</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for db in dbs %}<tr>
+                  <td class="mono">{{ db }}</td>
+                  <td>
+                    <a class="btn small secondary" href="{{ url_for('snapshot_db_download', server_id=s.id, snap=snap, dbname=db) }}">{{ icon('download') }} Download</a>
+                  </td>
+                  <td>
+                    <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" data-confirm="Restore database {{ db }} from {{ snap }}? Its current content will be replaced." data-confirm-second="Overwrite the LIVE database {{ db }} with the {{ snap }} version?">
+                      <input type="hidden" name="snapshot" value="{{ snap }}">
+                      <input type="hidden" name="db" value="{{ db }}">
+                      <button name="action" value="restore_db" class="small danger">{{ icon('backup') }} Restore database</button>
+                    </form>
+                  </td>
+              </tr>{% else %}<tr>
+                  <td colspan="3" class="empty-cell">No database dumps in this snapshot.</td>
+              </tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="hint" style="margin-top:16px;margin-bottom:0">A database restore changes only that database. Website files and other databases remain in place.</p>
+      </div>
+    </section>
+    {% if sys_sites %}<section id="folders">
+        <div class="card">
+          <h2>Other backed-up folders</h2>
+          <p class="hint">System folders and content outside named websites.</p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Folder</th>
+                  <th>Browse</th>
+                  <th>Download</th>
+                  <th>Restore</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for site in sys_sites %}<tr>
+                    <td class="mono">{{ site.path or site.label }}</td>
+                    <td>
+                      <a class="btn small" href="{{ url_for('snapshot_files', server_id=s.id, snap=snap, arch=site.arch) }}">{{ icon('folder') }} Browse &amp; select</a>
+                    </td>
+                    <td>
+                      <a class="btn small secondary" href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site.arch) }}">{{ icon('download') }} Download</a>
+                    </td>
+                    <td>
+                      <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" data-confirm="Restore {{ site.path or site.label }} from {{ snap }}? Current contents will be overwritten." data-confirm-second="Overwrite {{ site.path or site.label }} with the {{ snap }} version?">
+                        <input type="hidden" name="snapshot" value="{{ snap }}">
+                        <input type="hidden" name="item" value="{{ site.arch }}">
+                        <button name="action" value="restore_site" class="small danger">Restore files</button>
+                      </form>
+                    </td>
+                </tr>{% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+    </section>{% endif %}
+    <section id="configs">
+      <div class="card">
+        <h2>Configuration &amp; other files</h2>
+        <p class="hint">Download server configuration, manifests, and additional backup files.</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Size</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in others %}<tr>
+                  <td class="mono">{{ f.path }}</td>
+                  <td class="mono dim">{{ f.size }}</td>
+                  <td>
+                    <a class="btn small secondary" href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f=f.path) }}">{{ icon('download') }} Download</a>
+                  </td>
+              </tr>{% else %}<tr>
+                  <td colspan="3" class="empty-cell">No additional files in this snapshot.</td>
+              </tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  {% endif %}
 {% endblock %}

@@ -14,6 +14,7 @@ import smtplib
 import stat as statmod
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -22,12 +23,14 @@ import urllib.request
 from datetime import datetime
 from email.mime.text import MIMEText
 from functools import wraps
+from collections import OrderedDict
 
-from flask import (Flask, Response, abort, flash, g, redirect,
+from flask import (Flask, Response, abort, flash, g, jsonify, redirect,
                    render_template, request, send_from_directory, session,
                    url_for)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 import sshops
 
@@ -51,6 +54,11 @@ if os.path.exists(CONFIG_PATH):
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
                 CFG[k.strip()] = v.strip()
+
+# The same standard-library helper is deployed to the dashboard and web servers.
+sys.path.insert(0, CFG["AGENT_DIR"] if os.path.isdir(CFG["AGENT_DIR"])
+                else os.path.join(os.path.dirname(__file__), "..", "agent"))
+import archiveops
 
 app = Flask(__name__)
 app.secret_key = CFG["SECRET_KEY"]
@@ -447,6 +455,7 @@ echo "[1/5] Downloading backup agent from the panel ..."
 mkdir -p /tmp/wb-agent
 curl -fsSL "$PANEL/api/agent/webbackup?token=$TOKEN"  -o /tmp/wb-agent/webbackup
 curl -fsSL "$PANEL/api/agent/install.sh?token=$TOKEN" -o /tmp/wb-agent/install.sh
+curl -fsSL "$PANEL/api/agent/archiveops.py?token=$TOKEN" -o /tmp/wb-agent/archiveops.py
 head -c1 /tmp/wb-agent/webbackup | grep -q '#' || {
   echo "Download check failed — got an HTML page instead of the agent."
   echo "Make sure you used the exact command from the panel (https://...)."; exit 1; }
@@ -504,7 +513,7 @@ def enroll_script():
 def agent_file(name):
     if request.args.get("token", "") != enroll_token():
         abort(403)
-    if name not in ("webbackup", "install.sh"):
+    if name not in ("webbackup", "install.sh", "archiveops.py"):
         abort(404)
     return send_from_directory(CFG["AGENT_DIR"], name)
 
@@ -634,10 +643,9 @@ def link_server_work(name, host, port, ssh_user, root_pass, nas_pass):
 
         append("[3/6] Deploying webbackup agent ...")
         sshops.run(client, "mkdir -p /tmp/wb-agent", timeout=30)
-        sshops.sftp_put_file(client, os.path.join(CFG["AGENT_DIR"], "webbackup"),
-                             "/tmp/wb-agent/webbackup", 0o755)
-        sshops.sftp_put_file(client, os.path.join(CFG["AGENT_DIR"], "install.sh"),
-                             "/tmp/wb-agent/install.sh", 0o755)
+        for name in ("webbackup", "install.sh", "archiveops.py"):
+            sshops.sftp_put_file(client, os.path.join(CFG["AGENT_DIR"], name),
+                                 "/tmp/wb-agent/" + name, 0o755)
         rc, out = sshops.run(client, "bash /tmp/wb-agent/install.sh < /dev/null", timeout=600)
         append(out)
         if rc != 0:
@@ -763,6 +771,24 @@ def server_action(server_id):
         job_id = start_job(server_id, row["name"], "backup",
                            make("/usr/local/bin/webbackup run && echo BACKUP-OK",
                                 timeout=10 * 3600))
+    elif action == "update_agent":
+        def work(append):
+            client = connect_server(row)
+            folder = "/tmp/wb-agent-" + secrets.token_hex(12)
+            try:
+                rc, out = sshops.run(client, "mkdir -m 700 -- %s" % sshops.shq(folder), timeout=30)
+                if rc != 0:
+                    raise RuntimeError(out)
+                for name in ("webbackup", "install.sh", "archiveops.py"):
+                    sshops.sftp_put_file(client, os.path.join(CFG["AGENT_DIR"], name),
+                                         folder + "/" + name, 0o755)
+                rc, _ = sshops.run(client, "bash %s < /dev/null" % sshops.shq(folder + "/install.sh"),
+                                  timeout=600, append=append)
+                return rc == 0
+            finally:
+                sshops.run(client, "rm -rf -- %s" % sshops.shq(folder), timeout=30)
+                client.close()
+        job_id = start_job(server_id, row["name"], "update backup agent", work)
     elif action == "complete":
         nas_pass = request.form.get("nas_password", "") or get_setting("syno_pass")
         job_id = start_job(server_id, row["name"], "complete setup",
@@ -1102,25 +1128,43 @@ def server_hostname(row):
     return name
 
 
-def classify_site(arch, parent):
-    """Turn a mangled archive name + its original parent dir into a friendly
-    label: HestiaCP → user + domain; CloudPanel → user + domain; else path."""
+def classify_site(arch, parent, root=""):
+    """Show the domain for both old path-named and new domain-named archives."""
     base = arch[:-len(".tar.gz")] if arch.endswith(".tar.gz") else arch
     info = {"arch": arch, "label": base, "url": "", "path": ""}
     if parent:
         mang = parent.strip("/").replace("/", "_")
         top = base[len(mang) + 1:] if base.startswith(mang + "_") else ""
-        full = "%s/%s" % (parent.rstrip("/"), top) if top else parent
+        if root:
+            full = root
+        elif top:
+            full = "%s/%s" % (parent.rstrip("/"), top)
+        elif re.fullmatch(r"/home/[^/]+/web/[^/]+", parent):
+            full = parent.rstrip("/") + "/public_html"
+        elif re.fullmatch(r"/home/[^/]+/htdocs", parent):
+            full = parent.rstrip("/") + "/" + base
+        else:
+            full = parent
         info["path"] = full
         m = re.match(r"^/home/([^/]+)/web/([^/]+)/public_html$", full)   # HestiaCP
         if m:
-            info["label"], info["url"] = m.group(1), m.group(2)
+            info["label"], info["url"] = m.group(2), m.group(2)
+            info["user"] = m.group(1)
             return info
         m = re.match(r"^/home/([^/]+)/htdocs/([^/]+)$", full)            # CloudPanel
         if m:
-            info["label"], info["url"] = m.group(1), m.group(2)
+            info["label"], info["url"] = m.group(2), m.group(2)
+            info["user"] = m.group(1)
             return info
         info["label"] = full
+    # Pre-PATHS snapshots can still have a friendly domain label, but restoring
+    # requires the original parent map rather than guessing a live location.
+    if not parent:
+        m = re.fullmatch(r"home_(.+)_web_([^_]+)_public_html", base)
+        if not m:
+            m = re.fullmatch(r"home_(.+)_htdocs_([^_]+)", base)
+        if m:
+            info.update(label=m.group(2), url=m.group(2), user=m.group(1))
     return info
 
 
@@ -1131,6 +1175,173 @@ def human_bytes(n):
         n /= 1024.0
 
 
+ARCHIVE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*\.tar\.gz")
+ARCHIVE_CACHE = OrderedDict()
+ARCHIVE_CACHE_LOCK = threading.Lock()
+
+
+def snapshot_maps(nas, base):
+    maps = []
+    for name in ("PATHS.txt", "ROOTS.txt"):
+        rc, out = sshops.run(nas, "cat %s 2>/dev/null" % sshops.shq(base + "/files/" + name), timeout=30)
+        mapping = {}
+        if rc == 0:
+            for line in out.splitlines():
+                if "\t" in line:
+                    arch, path = line.split("\t", 1)
+                    mapping[arch] = path
+        maps.append(mapping)
+    return maps
+
+
+def archive_data(row, snap, arch):
+    """Use new snapshot indexes; stream metadata once for legacy tar.gz backups."""
+    key = (row["id"], row["host"], get_setting("syno_host"), get_setting("syno_path"), snap, arch)
+    with ARCHIVE_CACHE_LOCK:
+        cached = ARCHIVE_CACHE.get(key)
+        if cached and time.monotonic() - cached[0] < 600:
+            ARCHIVE_CACHE.move_to_end(key)
+            return cached[1]
+    host = server_hostname(row)
+    base = "%s/%s/%s" % (get_setting("syno_path").rstrip("/"), host, snap)
+    nas = nas_connect()
+    try:
+        parents, roots = snapshot_maps(nas, base)
+        remote = base + "/files/" + arch
+        rc, out = sshops.run(nas, "cat %s 2>/dev/null" % sshops.shq(remote[:-7] + ".index.json"), timeout=60)
+        index = None
+        if rc == 0:
+            try:
+                stored = json.loads(out)
+                if stored.get("version") == 1:
+                    index = archiveops.complete_index(stored["entries"])
+            except (ValueError, KeyError, TypeError, AttributeError):
+                pass  # Missing/damaged indexes can be rebuilt from the archive.
+        if index is None:
+            chan = nas.get_transport().open_session()
+            chan.settimeout(600)
+            chan.exec_command("cat -- %s" % sshops.shq(remote))
+            try:
+                with chan.makefile("rb") as stream:
+                    index = archiveops.read_index(stream)
+                while chan.recv(65536):
+                    pass
+                if chan.recv_exit_status() != 0:
+                    raise RuntimeError("Could not read this website archive")
+            finally:
+                chan.close()
+        parent = parents.get(arch, "")
+        actual_root = parent.rstrip("/") + "/" + index["root"] if parent else ""
+        if roots.get(arch) and roots[arch] != actual_root:
+            raise ValueError("Snapshot root mapping does not match the archive")
+        site = classify_site(arch, parent, actual_root)
+        data = {"index": index, "site": site, "parent": parent}
+    finally:
+        nas.close()
+    with ARCHIVE_CACHE_LOCK:
+        ARCHIVE_CACHE[key] = (time.monotonic(), data)
+        ARCHIVE_CACHE.move_to_end(key)
+        while len(ARCHIVE_CACHE) > 6:
+            ARCHIVE_CACHE.popitem(last=False)
+    return data
+
+
+def validate_archive_request(snap, arch):
+    if not SNAP_RE.fullmatch(snap) or not ARCHIVE_RE.fullmatch(arch):
+        abort(400)
+
+
+def restore_csrf():
+    token = session.setdefault("restore_csrf", secrets.token_hex(32))
+    if request.method == "POST" and not secrets.compare_digest(token, request.form.get("csrf", "")):
+        abort(400, "Restore form expired. Reload the file browser.")
+    return token
+
+
+@app.route("/servers/<int:server_id>/snapshots/<snap>/files/<arch>")
+@login_required
+def snapshot_files(server_id, snap, arch):
+    validate_archive_request(snap, arch)
+    return render_template("snapshot_files.html", s=server_row(server_id), snap=snap,
+                           arch=arch, csrf=restore_csrf())
+
+
+@app.route("/servers/<int:server_id>/snapshots/<snap>/file-index")
+@login_required
+def snapshot_file_index(server_id, snap):
+    arch = request.args.get("archive", "")
+    validate_archive_request(snap, arch)
+    try:
+        data = archive_data(server_row(server_id), snap, arch)
+        return jsonify(index=data["index"], site=data["site"], restorable=bool(data["parent"]))
+    except Exception as exc:
+        return jsonify(error="Could not read the backup files: %s" % exc), 502
+
+
+def selected_restore_work(row, snap, arch, selection):
+    def work(append):
+        client = connect_server(row)
+        folder = "/tmp/wb-selection-" + secrets.token_hex(12)
+        created = False
+        try:
+            rc, _ = sshops.run(client, "command -v python3 >/dev/null && test -f /usr/local/lib/webbackup/archiveops.py", timeout=30)
+            if rc != 0:
+                raise RuntimeError("Open this server's page and click Update backup agent, then retry the restore.")
+            rc, out = sshops.run(client, "mkdir -m 700 -- %s" % sshops.shq(folder), timeout=30)
+            if rc != 0:
+                raise RuntimeError(out)
+            created = True
+            path = folder + "/selection.json"
+            sshops.sftp_put_data(client, json.dumps(selection), path, 0o600)
+            rc, _ = sshops.run(client, "/usr/local/bin/webbackup restore-items %s %s %s"
+                              % (sshops.shq(snap), sshops.shq(arch), sshops.shq(path)), timeout=7200, append=append)
+            return rc == 0
+        finally:
+            try:
+                if created:
+                    sshops.run(client, "rm -rf -- %s" % sshops.shq(folder), timeout=30)
+            finally:
+                client.close()
+    return work
+
+
+@app.route("/servers/<int:server_id>/snapshots/<snap>/restore-selected", methods=["POST"])
+@login_required
+def snapshot_restore_selected(server_id, snap):
+    csrf = restore_csrf()
+    row = server_row(server_id)
+    signer = URLSafeTimedSerializer(app.secret_key, salt="selected-restore")
+    token = request.form.get("restore_token", "")
+    if token:
+        try:
+            reviewed = signer.loads(token, max_age=1200)
+        except (BadSignature, SignatureExpired):
+            abort(400, "Restore review expired. Select the files again.")
+        if reviewed["server"] != server_id or reviewed["snapshot"] != snap:
+            abort(400)
+        arch, selection = reviewed["archive"], reviewed["selection"]
+    else:
+        arch, selection = request.form.get("archive", ""), request.form.getlist("paths")
+    validate_archive_request(snap, arch)
+    try:
+        data = archive_data(row, snap, arch)
+        if not data["parent"]:
+            raise ValueError("This snapshot has no original path map. Download it for a manual restore.")
+        chosen = archiveops.selected_entries(data["index"], selection)
+    except Exception as exc:
+        flash(str(exc))
+        return redirect(url_for("snapshot_files", server_id=server_id, snap=snap, arch=arch))
+    if token:
+        job_id = start_job(server_id, row["name"], "restore selected files: %s" % data["site"]["label"],
+                           selected_restore_work(row, snap, arch, selection))
+        return redirect(url_for("job", job_id=job_id))
+    token = signer.dumps({"server": server_id, "snapshot": snap, "archive": arch, "selection": selection})
+    files = [e for e in chosen if e["type"] == "file"]
+    return render_template("restore_review.html", s=row, snap=snap, arch=arch, site=data["site"],
+                           selection=selection, files=files, total_size=human_bytes(sum(f["size"] for f in files)),
+                           token=token, csrf=csrf)
+
+
 @app.route("/servers/<int:server_id>/snapshots/<snap>")
 @login_required
 def snapshot_browse(server_id, snap):
@@ -1138,6 +1349,7 @@ def snapshot_browse(server_id, snap):
     if not SNAP_RE.match(snap):
         abort(400)
     files, sites, dbs, error = [], [], [], ""
+    nas = None
     try:
         host = server_hostname(row)
         nas = nas_connect()
@@ -1170,18 +1382,10 @@ def snapshot_browse(server_id, snap):
                 if m.startswith("mysql_") and m.endswith(".sql.gz"):
                     dbs.append(m[len("mysql_"):-len(".sql.gz")])
         # path map -> friendly site names (user + domain)
-        paths_map = {}
-        rc, pout = sshops.run(nas, "cat %s 2>/dev/null"
-                              % sshops.shq(base + "/files/PATHS.txt"), timeout=30)
-        if rc == 0:
-            for line in pout.splitlines():
-                if "\t" in line:
-                    a, p = line.split("\t", 1)
-                    paths_map[a.strip()] = p.strip()
-        nas.close()
+        paths_map, roots_map = snapshot_maps(nas, base)
         named, sys_sites = [], []
         for arch in sorted(set(sites)):
-            info = classify_site(arch, paths_map.get(arch, ""))
+            info = classify_site(arch, paths_map.get(arch, ""), roots_map.get(arch, ""))
             (named if info["url"] else sys_sites).append(info)
         named.sort(key=lambda i: i["label"].lower())
         files.sort(key=lambda f: f["path"])
@@ -1191,6 +1395,9 @@ def snapshot_browse(server_id, snap):
     except Exception as exc:
         error = str(exc)
         named, sys_sites, others = [], [], []
+    finally:
+        if nas is not None:
+            nas.close()
     return render_template("snapshot.html", s=row, snap=snap, files=files,
                            others=others, sites=named, sys_sites=sys_sites,
                            dbs=sorted(set(dbs)), error=error)
@@ -1303,7 +1510,7 @@ def apply_update_from(root):
     asrc = os.path.join(root, "agent")
     if os.path.isdir(asrc):
         os.makedirs(CFG["AGENT_DIR"], exist_ok=True)
-        for name in ("webbackup", "install.sh"):
+        for name in ("webbackup", "install.sh", "archiveops.py"):
             src = os.path.join(asrc, name)
             if os.path.isfile(src):
                 dst = os.path.join(CFG["AGENT_DIR"], name)
