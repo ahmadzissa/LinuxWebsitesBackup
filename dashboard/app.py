@@ -721,19 +721,24 @@ def server(server_id):
     with db() as c:
         jobs = c.execute("SELECT * FROM jobs WHERE server_id=? ORDER BY id DESC LIMIT 10",
                          (server_id,)).fetchall()
-    snapshots, conf, error = [], "", ""
+    snapshots, snap_sizes, conf, error = [], {}, "", ""
     try:
         client = connect_server(row)
-        rc, out = sshops.run(client, "/usr/local/bin/webbackup snapshots", timeout=40)
+        rc, out = sshops.run(client, "/usr/local/bin/webbackup snapshots", timeout=60)
         if rc == 0:
-            snapshots = [s for s in out.split() if re.fullmatch(
-                r"\d{4}-\d{2}-\d{2}_\d{4}", s)]
+            for line in out.splitlines():
+                toks = line.split()
+                if toks and re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4}", toks[0]):
+                    snapshots.append(toks[0])
+                    if len(toks) > 1 and toks[1].isdigit():
+                        snap_sizes[toks[0]] = human_bytes(int(toks[1]))
         conf = sshops.read_file(client, "/etc/webbackup/webbackup.conf") or ""
         client.close()
     except Exception as exc:
         error = str(exc)
     return render_template("server.html", s=row, jobs=jobs,
-                           snapshots=list(reversed(snapshots)), conf=conf, error=error)
+                           snapshots=list(reversed(snapshots)),
+                           snap_sizes=snap_sizes, conf=conf, error=error)
 
 
 @app.route("/servers/<int:server_id>/action", methods=["POST"])
@@ -1097,6 +1102,28 @@ def server_hostname(row):
     return name
 
 
+def classify_site(arch, parent):
+    """Turn a mangled archive name + its original parent dir into a friendly
+    label: HestiaCP → user + domain; CloudPanel → user + domain; else path."""
+    base = arch[:-len(".tar.gz")] if arch.endswith(".tar.gz") else arch
+    info = {"arch": arch, "label": base, "url": "", "path": ""}
+    if parent:
+        mang = parent.strip("/").replace("/", "_")
+        top = base[len(mang) + 1:] if base.startswith(mang + "_") else ""
+        full = "%s/%s" % (parent.rstrip("/"), top) if top else parent
+        info["path"] = full
+        m = re.match(r"^/home/([^/]+)/web/([^/]+)/public_html$", full)   # HestiaCP
+        if m:
+            info["label"], info["url"] = m.group(1), m.group(2)
+            return info
+        m = re.match(r"^/home/([^/]+)/htdocs/([^/]+)$", full)            # CloudPanel
+        if m:
+            info["label"], info["url"] = m.group(1), m.group(2)
+            return info
+        info["label"] = full
+    return info
+
+
 def human_bytes(n):
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
@@ -1142,16 +1169,30 @@ def snapshot_browse(server_id, snap):
             for m in out.split():
                 if m.startswith("mysql_") and m.endswith(".sql.gz"):
                     dbs.append(m[len("mysql_"):-len(".sql.gz")])
+        # path map -> friendly site names (user + domain)
+        paths_map = {}
+        rc, pout = sshops.run(nas, "cat %s 2>/dev/null"
+                              % sshops.shq(base + "/files/PATHS.txt"), timeout=30)
+        if rc == 0:
+            for line in pout.splitlines():
+                if "\t" in line:
+                    a, p = line.split("\t", 1)
+                    paths_map[a.strip()] = p.strip()
         nas.close()
+        named, sys_sites = [], []
+        for arch in sorted(set(sites)):
+            info = classify_site(arch, paths_map.get(arch, ""))
+            (named if info["url"] else sys_sites).append(info)
+        named.sort(key=lambda i: i["label"].lower())
         files.sort(key=lambda f: f["path"])
         others = [f for f in files
                   if not f["path"].startswith(("files/", "databases/mysql_"))
                   or f["path"] == "databases/mysql_all_databases.tar"]
     except Exception as exc:
         error = str(exc)
-        others = []
+        named, sys_sites, others = [], [], []
     return render_template("snapshot.html", s=row, snap=snap, files=files,
-                           others=others, sites=sorted(sites),
+                           others=others, sites=named, sys_sites=sys_sites,
                            dbs=sorted(set(dbs)), error=error)
 
 

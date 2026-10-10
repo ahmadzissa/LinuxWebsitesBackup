@@ -2,7 +2,7 @@
 {% block title %}{{ snap }} · {{ s.name }}{% endblock %}
 {% block content %}
 <div class="row-head">
-  <h1>Snapshot {{ snap }} <span class="mono dim">{{ s.name }}</span></h1>
+  <h1>Snapshot {{ snap }} <span class="mono dim">{{ s.name }} · {{ s.host }}</span></h1>
   <a class="btn" href="{{ url_for('server', server_id=s.id) }}">← Back to server</a>
 </div>
 
@@ -16,27 +16,55 @@
     they were in this snapshot — only this site's files change; its database
     and everything else stay as they are now.</p>
   <table>
-    <tr><th>Website</th><th></th><th></th></tr>
+    <tr><th>Website</th><th>URL</th><th></th><th></th></tr>
     {% for site in sites %}
     <tr>
-      <td class="mono">{{ site | replace('.tar.gz','') }}</td>
+      <td><b>{{ site.label }}</b></td>
+      <td><a class="mono" href="https://{{ site.url }}" target="_blank">{{ site.url }}</a></td>
       <td><a class="btn small"
-             href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site) }}">⬇ Download</a></td>
+             href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site.arch) }}">⬇ Download</a></td>
       <td>
         <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
-              onsubmit="return confirm('Restore the FILES of this website from {{ snap }}? Current files of this site will be overwritten (database not touched).')
-                     && confirm('Second confirmation: overwrite this website\'s live files with the {{ snap }} version?')">
+              onsubmit="return confirm('Restore the FILES of {{ site.url }} from {{ snap }}? Current files of this site will be overwritten (database not touched).')
+                     && confirm('Second confirmation: overwrite the live files of {{ site.url }} with the {{ snap }} version?')">
           <input type="hidden" name="snapshot" value="{{ snap }}">
-          <input type="hidden" name="item" value="{{ site }}">
+          <input type="hidden" name="item" value="{{ site.arch }}">
           <button name="action" value="restore_site" class="small danger">↩ Restore files</button>
         </form>
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="3">No website archives in this snapshot.</td></tr>
+    <tr><td colspan="4">No named websites detected
+      {% if sys_sites %}(see "Other folders" below){% endif %} — friendly names
+      need a snapshot made by agent v1.4.1+ .</td></tr>
     {% endfor %}
   </table>
 </div>
+
+{% if sys_sites %}
+<div class="card">
+  <h2>🗂 Other backed-up folders (system / non-website)</h2>
+  <table>
+    <tr><th>Folder</th><th></th><th></th></tr>
+    {% for site in sys_sites %}
+    <tr>
+      <td class="mono">{{ site.path or site.label }}</td>
+      <td><a class="btn small"
+             href="{{ url_for('snapshot_download', server_id=s.id, snap=snap, f='files/' + site.arch) }}">⬇ Download</a></td>
+      <td>
+        <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
+              onsubmit="return confirm('Restore {{ site.path or site.label }} from {{ snap }}? Current contents will be overwritten.')
+                     && confirm('Second confirmation: overwrite {{ site.path or site.label }} with the {{ snap }} version?')">
+          <input type="hidden" name="snapshot" value="{{ snap }}">
+          <input type="hidden" name="item" value="{{ site.arch }}">
+          <button name="action" value="restore_site" class="small danger">↩ Restore files</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
 
 <div class="card">
   <h2>🗄 Databases</h2>
@@ -66,7 +94,7 @@
   </table>
 </div>
 
-{% if sites %}
+{% if sites or sys_sites %}
 <div class="card">
   <h2>📄 Restore a single file</h2>
   <form method="post" action="{{ url_for('server_action', server_id=s.id) }}"
@@ -74,7 +102,8 @@
     <div class="row-fields">
       <label>From website
         <select name="item">
-          {% for site in sites %}<option value="{{ site }}">{{ site | replace('.tar.gz','') }}</option>{% endfor %}
+          {% for site in sites %}<option value="{{ site.arch }}">{{ site.label }} — {{ site.url }}</option>{% endfor %}
+          {% for site in sys_sites %}<option value="{{ site.arch }}">{{ site.path or site.label }}</option>{% endfor %}
         </select></label>
       <label>Path inside the archive
         <input name="fpath" class="mono" required

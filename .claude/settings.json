@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/xampp/htdocs/_claude-workflow-harness/hooks/workflow-guard.js || exit 2",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -24,7 +24,7 @@
 #
 set -u
 
-VERSION="1.4.3"
+VERSION="1.4.4"
 CONFIG_DIR="/etc/webbackup"
 CONFIG_FILE="$CONFIG_DIR/webbackup.conf"
 DB_CNF="$CONFIG_DIR/db.cnf"
@@ -1127,7 +1127,18 @@ case "${1:-menu}" in
     detect)    cmd_detect ;;
     test)      cmd_test ;;
     list)      cmd_list ;;
-    snapshots) require_configured; snapshot_list_remote "$(hostname)" ;;
+    snapshots)
+        # machine-readable: "<name> <bytes>" per line (size may be absent on error)
+        require_configured
+        _sn_host="$(hostname)"
+        _sn_out="$(run_ssh "cd '$SYNO_PATH/$_sn_host' 2>/dev/null && du -sk -- */ 2>/dev/null")"
+        if [ -n "$_sn_out" ]; then
+            printf '%s\n' "$_sn_out" | awk '{kb=$1; name=$2; sub(/\/$/,"",name);
+                if (name ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}$/) printf "%s %d\n", name, kb*1024}' | sort
+        else
+            snapshot_list_remote "$_sn_host"
+        fi
+        ;;
     laststate) cat "$STATE_DIR/last" 2>/dev/null || echo "none" ;;
     restore)   cmd_restore "${2:-}" "${3:-}" ;;
     restore-site) cmd_restore_site "${2:-}" "${3:-}" ;;

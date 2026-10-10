@@ -50,10 +50,11 @@
   <h2>Snapshots on the NAS</h2>
   {% if snapshots %}
   <table>
-    <tr><th>Snapshot</th><th></th><th></th><th></th></tr>
+    <tr><th>Snapshot</th><th>Size</th><th></th><th></th><th></th></tr>
     {% for snap in snapshots %}
     <tr>
       <td class="mono">{{ snap }}</td>
+      <td class="mono">{{ snap_sizes.get(snap, '—') }}</td>
       <td>
         <a class="btn small" href="{{ url_for('snapshot_browse', server_id=s.id, snap=snap) }}">⬇ Browse &amp; download</a>
       </td>
