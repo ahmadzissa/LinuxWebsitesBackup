@@ -73,6 +73,31 @@ def read_index(fileobj):
         return complete_index([member_entry(m) for m in archive])
 
 
+def cache_index(archive_path):
+    """Create a sidecar index without changing the archive or an existing index."""
+    archive_path = os.fspath(archive_path)
+    if not archive_path.endswith(".tar.gz"):
+        raise ValueError("Expected a .tar.gz archive")
+    index_path = archive_path[:-7] + ".index.json"
+    if os.path.exists(index_path):
+        return index_path
+    with open(archive_path, "rb") as source:
+        index = read_index(source)
+    fd, temporary = tempfile.mkstemp(prefix=".wb-index-", dir=os.path.dirname(os.path.abspath(index_path)))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(index, output, separators=(",", ":"))
+        try:
+            # Publishing via a hard link is atomic and refuses to overwrite an
+            # index produced by another reader while this archive was scanned.
+            os.link(temporary, index_path)
+        except FileExistsError:
+            pass
+    finally:
+        os.unlink(temporary)
+    return index_path
+
+
 def selected_entries(index, selection):
     if not isinstance(selection, list) or not selection or len(selection) > 5000:
         raise ValueError("Select between 1 and 5000 files or folders")
@@ -230,7 +255,7 @@ def restore(archive_path, parent_path, selection):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("name", "index", "restore"))
+    parser.add_argument("command", choices=("name", "index", "index-cache", "restore"))
     parser.add_argument("path")
     parser.add_argument("parent", nargs="?")
     parser.add_argument("selection", nargs="?")
@@ -240,6 +265,8 @@ def main():
     elif args.command == "index":
         with open(args.path, "rb") as source:
             json.dump(read_index(source), sys.stdout, separators=(",", ":"))
+    elif args.command == "index-cache":
+        print(cache_index(args.path))
     else:
         with open(args.selection, encoding="utf-8") as source:
             restore(args.path, args.parent, json.load(source))

@@ -152,7 +152,7 @@
     <div class="card">
       <div class="card-title">{{ icon('settings') }}<h2>Server maintenance</h2>
       </div>
-      <p class="hint">Test connectivity, update the backup agent, or clear downloaded restore files.</p>
+      <p class="hint">After updating the dashboard, update this server's backup agent to enable selected-file restores and file indexes for new backups.</p>
       <form method="post" action="{{ url_for('server_action', server_id=s.id) }}" class="inline-forms">
         <button name="action" value="test" class="secondary">Test NAS connection</button>
         <button name="action" value="refresh" class="secondary">{{ icon('refresh') }} Refresh status</button>

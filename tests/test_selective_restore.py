@@ -71,6 +71,25 @@ class ArchiveTests(unittest.TestCase):
                                ("/usr/share/phpmyadmin/", "usr_share_phpmyadmin")]:
             self.assertEqual(archiveops.archive_name(root), expected)
 
+    def test_cached_index_preserves_archive_and_existing_index(self):
+        original = self.archive.read_bytes()
+        index_path = Path(archiveops.cache_index(self.archive))
+        self.assertEqual(index_path.name, "example.com.index.json")
+        with self.archive.open("rb") as source:
+            self.assertEqual(json.loads(index_path.read_text()), archiveops.read_index(source))
+        self.assertEqual(self.archive.read_bytes(), original)
+        index_path.write_text("existing index")
+        archiveops.cache_index(self.archive)
+        self.assertEqual(index_path.read_text(), "existing index")
+        self.assertEqual(list(self.archive.parent.glob(".wb-index-*")), [])
+
+    def test_invalid_archive_cannot_publish_a_cached_index(self):
+        make_archive(self.archive, {"public_html/../../escape": b"invalid"})
+        with self.assertRaises(ValueError):
+            archiveops.cache_index(self.archive)
+        self.assertFalse(self.archive.with_name("example.com.index.json").exists())
+        self.assertEqual(list(self.archive.parent.glob(".wb-index-*")), [])
+
     def test_single_file_replaces_only_that_file(self):
         (self.root / "index.php").write_text("live index")
         (self.root / "keep.php").write_text("live extra")
@@ -251,6 +270,35 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(result["site"]["path"], self.parent + "/public_html")
                 self.assertEqual(channel.exec_command.call_count, 0 if indexed else 1)
                 nas.close.assert_called_once()
+
+    def test_legacy_index_is_built_on_nas_without_streaming_the_archive(self):
+        patch.stopall()
+        nas = Mock()
+        built = False
+
+        def run(client, cmd, **kwargs):
+            nonlocal built
+            if "PATHS.txt" in cmd:
+                return 0, self.arch + "\t" + self.parent + "\n"
+            if "ROOTS.txt" in cmd:
+                return 1, ""
+            if "command -v python3" in cmd:
+                return 0, ""
+            if cmd.startswith("python3 -c "):
+                self.assertTrue(cmd.endswith("index-cache '/volume1/WebBackups/server/%s/files/%s'" % (self.snap, self.arch)))
+                built = True
+                return 0, "index created"
+            return (0, json.dumps(self.index)) if built else (1, "")
+
+        with patch.object(dashboard, "server_hostname", return_value="server"), \
+             patch.object(dashboard, "get_setting", side_effect=lambda key: "/volume1/WebBackups" if key == "syno_path" else "nas"), \
+             patch.object(dashboard, "nas_connect", return_value=nas), \
+             patch.object(dashboard.sshops, "run", side_effect=run):
+            result = dashboard.archive_data(self.row, self.snap, self.arch)
+        self.assertTrue(built)
+        self.assertEqual(result["index"], self.index)
+        nas.get_transport.assert_not_called()
+        nas.close.assert_called_once()
 
 
 if __name__ == "__main__":

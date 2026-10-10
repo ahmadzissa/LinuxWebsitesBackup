@@ -3,7 +3,7 @@
 # webbackup installer — run on a fresh Linux server:
 #   sudo bash install.sh
 #
-set -u
+set -eu
 
 RED=$'\033[0;31m'; GRN=$'\033[0;32m'; OFF=$'\033[0m'
 die() { echo "${RED}✘ $*${OFF}" >&2; exit 1; }

@@ -1,0 +1,35 @@
+# Paste these locations inside the dashboard's existing nginx server block.
+# Replace its existing `location /` block; retain TLS and /.well-known rules.
+# Match all three ports to PORT in /etc/webbackup-dashboard/dashboard.conf.
+# The default is 8800; serverbackup.areviewsapp.com currently uses 8090.
+
+client_max_body_size 64m;
+
+location ^~ /static/ {
+    proxy_pass http://127.0.0.1:8800;
+    proxy_set_header Host $host;
+}
+
+# Archive browser URLs end in .tar.gz but are authenticated Flask pages.
+# ^~ keeps CloudPanel's extension-based static-file rules from intercepting them.
+location ^~ /servers/ {
+    proxy_pass http://127.0.0.1:8800;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 900;
+    proxy_send_timeout 900;
+}
+
+location / {
+    proxy_pass http://127.0.0.1:8800;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 900;
+    proxy_send_timeout 900;
+}

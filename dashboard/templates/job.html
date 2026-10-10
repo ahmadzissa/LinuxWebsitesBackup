@@ -1,7 +1,6 @@
 {% extends "base.html" %}
-{% from "_ui.html" import icon, job_status %}
+{% from "_ui.html" import icon %}
 {% block title %}Job #{{ j.id }}{% endblock %}
-{% block head %}{% if j.status == 'running' %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
 {% block content %}
   <div class="breadcrumb">
     <a href="{{ url_for('jobs') }}">Activity</a>{{ icon('chevron') }}<span>Job #{{ j.id }}</span>
@@ -10,20 +9,22 @@
     <div><span class="eyebrow">JOB #{{ j.id }}</span>
       <h1>{{ j.type|replace('_',' ')|capitalize|replace(' nas',' NAS') }}</h1>
       <p>{{ j.server_name or 'Workspace' }}</p>
-    </div>{{ job_status(j.status) }}</div>
+    </div><span class="pill {{ j.status }}" id="job-status" role="status"><span class="status-dot"></span><span id="job-status-label">{{ 'Completed' if j.status == 'ok' else 'Failed' if j.status == 'fail' else j.status|capitalize }}</span></span></div>
   <div class="detail-stats">
     <div class="detail-stat"><span>Server</span><strong>{{ j.server_name or 'Workspace' }}</strong>
     </div>
     <div class="detail-stat"><span>Started</span><strong class="mono">{{ j.created }}</strong>
     </div>
-    <div class="detail-stat"><span>Finished</span><strong class="mono">{{ j.finished or 'In progress' if j.status == 'running' else j.finished or '—' }}</strong>
+    <div class="detail-stat"><span>Finished</span><strong class="mono" id="job-finished">{{ j.finished or 'In progress' if j.status == 'running' else j.finished or '—' }}</strong>
     </div>
   </div>
-  {% if j.status == 'fail' %}<div class="flash">{{ icon('alert') }}<span>This job failed. Review the output below to find the cause before trying again.</span>
-  </div>{% endif %}
-  <div class="card log-card">
-    <div class="log-header"><span>{{ icon('terminal') }} Job output</span>{% if j.status == 'running' %}<span class="live-label" role="status">Live · refreshes every 3 seconds</span>{% else %}<button type="button" data-copy-target="job-output">{{ icon('copy') }} Copy log</button>{% endif %}</div><pre class="log" id="job-output">{{ j.output or 'Waiting for output…' }}</pre>
+  <div class="flash" id="job-failure" role="alert" {% if j.status != 'fail' %}hidden{% endif %}>{{ icon('alert') }}<span>This job failed. Review the output below to find the cause before trying again.</span>
   </div>
+  <div class="card log-card">
+    <div class="log-header"><span>{{ icon('terminal') }} Job output</span><span class="log-actions">{% if j.status == 'running' %}<span class="live-label" id="job-live" role="status">Live · updates automatically</span><a href="{{ url_for('login', next=url_for('job', job_id=j.id)) }}" id="job-sign-in" hidden>Sign in</a>{% endif %}<button type="button" data-copy-target="job-output">{{ icon('copy') }} Copy log</button></span></div><pre class="log" id="job-output" tabindex="0" aria-label="Job output" {% if j.status == 'running' %}data-output-url="{{ url_for('job_output', job_id=j.id) }}" data-output-offset="{{ (j.output or '')|length }}"{% endif %}>{{ j.output or 'Waiting for output…' }}</pre>
+  </div>
+  {% if j.status == 'running' %}<noscript><p class="hint">Enable JavaScript for live output, or <a href="{{ url_for('job', job_id=j.id) }}">refresh this job</a> to see updates.</p></noscript>{% endif %}
   <div class="button-row">{% if j.server_id %}<a class="btn secondary" href="{{ url_for('server', server_id=j.server_id) }}">{{ icon('arrow-left') }} Back to server</a>{% endif %}<a class="text-link" href="{{ url_for('jobs') }}">All activity {{ icon('arrow-right') }}</a>
   </div>
 {% endblock %}
+{% block scripts %}{% if j.status == 'running' %}<script src="{{ url_for('static', filename='job-output.js') }}" defer></script>{% endif %}{% endblock %}

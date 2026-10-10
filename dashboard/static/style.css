@@ -1532,6 +1532,21 @@ pre.log.small {
   gap:8px
 }
 
+.log-header .log-actions {
+  flex-wrap:wrap;
+  justify-content:flex-end
+}
+
+.log-actions a {
+  color:#bfd4c8
+}
+
+#job-output {
+  max-height:65vh;
+  overflow:auto;
+  overscroll-behavior:contain
+}
+
 .log-header .icon {
   width:15px;
   height:15px

@@ -46,6 +46,9 @@
         </header>
       {% endif %}
       <main id="main-content" tabindex="-1">
+        {% if archive_helper_missing and session.get('auth') %}
+          <div class="flash" role="alert">{{ icon('alert') }}<span>Archive helper is missing. Upload the full project, including <code>agent/archiveops.py</code>, then <a href="{{ url_for('settings') }}#updates">apply the project update</a> to enable file browsing and selected restores.</span></div>
+        {% endif %}
         {% with msgs = get_flashed_messages() %}
           {% for m in msgs %}<div class="flash" role="status">{{ icon('info') }}<span>{{ m }}</span>
           </div>{% endfor %}

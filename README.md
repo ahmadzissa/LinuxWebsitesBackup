@@ -110,11 +110,75 @@ stages selected contents before changing live files, and retains saved file
 permissions, ownership and modification times on Linux.
 
 After updating the dashboard, click **Update backup agent** on each server once.
+Open **Server → Maintenance → Update backup agent** and wait for its job to
+complete before restoring selected files. Updating the dashboard updates its
+local agent bundle; linked servers need their own agent update.
 Agent v1.5.0 adds Python 3, the archive helper, domain-based filenames (for example
 `wordpress.areviewsapp.com.tar.gz`), and file indexes for faster browsing. Older
 path-named archives are still supported and are indexed on demand. Direct
 restores require the snapshot's original `files/PATHS.txt` mapping; snapshots
 without that mapping can be browsed and downloaded for a manual restore.
+
+For an older snapshot without a file index, the dashboard builds an index on
+the NAS when Python 3 and write access are available. It creates a sidecar
+`.index.json` file atomically and keeps existing indexes. The archive itself is
+unchanged. NASes without these capabilities use the original streaming scan,
+which can take several minutes for large backups.
+
+### Dashboard updates and recovery
+
+Job pages update their output and final status automatically every two seconds
+without reloading the page. The log follows new output while you are at the
+bottom and keeps your place when you scroll up. Interrupted connections retry
+automatically; completed jobs stop requesting updates.
+
+Upload the full project to the **Project folder on this server** shown under
+**Settings → Dashboard updates**, including `agent/archiveops.py`, templates,
+and static assets. Then click **Apply project update**. The updater checks
+required files and Python syntax before applying the update and installs the
+new entry point after its helper and assets. The one-click updater stages the
+files first and rolls them back if replacement fails. Config, database, login,
+and SSH keys are kept.
+
+If the panel is offline, log in to the dashboard server as **root** and run
+from the uploaded project folder (no sudo is needed in a root session):
+
+```sh
+bash update.sh
+systemctl status webbackup-dashboard --no-pager -l
+journalctl -u webbackup-dashboard -n 50 --no-pager
+```
+
+An old one-click updater can miss `archiveops.py` on the first upgrade. The
+dashboard now stays online and shows an update notice when that helper is
+missing. Apply the complete project again using the new updater. To recover
+an already installed version that crashes with `No module named 'archiveops'`,
+run `bash update.sh` from the complete project folder.
+
+### nginx / CloudPanel reverse proxy
+
+Use `dashboard/nginx-dashboard.conf.example` inside the dashboard's existing
+nginx server block. Replace its existing `location /` block and keep TLS and
+certificate-validation rules. Match all example ports to `PORT` in
+`/etc/webbackup-dashboard/dashboard.conf`; the default is `8800`, while the
+current `serverbackup.areviewsapp.com` deployment uses `8090`.
+
+The explicit `location ^~ /static/` serves the dashboard's CSS and JavaScript.
+The explicit `location ^~ /servers/` forwards archive browser pages, downloads,
+and restore actions to Flask, including URLs ending in `.tar.gz`. CloudPanel's
+generic static-extension rule otherwise returns an nginx 404 before Flask
+can handle those pages. Flask still performs authentication and validation.
+
+After saving the nginx configuration, validate and reload it from a root
+session:
+
+```sh
+nginx -t && systemctl reload nginx
+```
+
+Then hard-refresh the dashboard with **Ctrl+F5**. These nginx changes are
+separate from the dashboard update button; retain them when editing the site's
+CloudPanel vhost.
 
 ### Using the agent standalone (no dashboard)
 

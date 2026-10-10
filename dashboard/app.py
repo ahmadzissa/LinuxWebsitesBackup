@@ -5,6 +5,7 @@ Runs as a small Flask service. Talks to linked servers over SSH (paramiko)
 using its own key, deploys/configures the webbackup agent, triggers backups
 and restores, and pushes schedule/retention settings to selected servers.
 """
+import importlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from functools import wraps
 from collections import OrderedDict
+from contextlib import closing
 
 from flask import (Flask, Response, abort, flash, g, jsonify, redirect,
                    render_template, request, send_from_directory, session,
@@ -58,7 +60,14 @@ if os.path.exists(CONFIG_PATH):
 # The same standard-library helper is deployed to the dashboard and web servers.
 sys.path.insert(0, CFG["AGENT_DIR"] if os.path.isdir(CFG["AGENT_DIR"])
                 else os.path.join(os.path.dirname(__file__), "..", "agent"))
-import archiveops
+try:
+    import archiveops
+except ModuleNotFoundError as exc:
+    if exc.name != "archiveops":
+        raise
+    # An older updater does not copy this new helper. Keep the panel reachable
+    # so its new updater can finish installing the complete project.
+    archiveops = None
 
 app = Flask(__name__)
 app.secret_key = CFG["SECRET_KEY"]
@@ -66,6 +75,25 @@ app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024  # update bundles
 # honor X-Forwarded-Proto/Host from the reverse proxy (CloudPanel nginx), so
 # generated URLs (enroll command) correctly say https:// and the right host
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+
+def require_archive_helper():
+    global archiveops
+    if archiveops is None:
+        try:
+            archiveops = importlib.import_module("archiveops")
+        except ModuleNotFoundError as exc:
+            if exc.name != "archiveops":
+                raise
+            raise RuntimeError("Archive helper is missing. Upload the full project, "
+                               "including agent/archiveops.py, then apply the "
+                               "project update in Settings.") from exc
+    return archiveops
+
+
+@app.context_processor
+def update_health():
+    return {"archive_helper_missing": archiveops is None}
 
 DEFAULT_SETTINGS = {
     "syno_host": "", "syno_port": "22", "syno_user": "",
@@ -784,7 +812,16 @@ def server_action(server_id):
                                          folder + "/" + name, 0o755)
                 rc, _ = sshops.run(client, "bash %s < /dev/null" % sshops.shq(folder + "/install.sh"),
                                   timeout=600, append=append)
-                return rc == 0
+                if rc != 0:
+                    return False
+                rc, out = sshops.run(client, "command -v python3 >/dev/null && "
+                                    "test -r /usr/local/lib/webbackup/archiveops.py && "
+                                    "/usr/local/bin/webbackup --version", timeout=30)
+                if rc != 0:
+                    raise RuntimeError("Agent installation did not provide Python 3 "
+                                       "and the archive helper: " + out)
+                append("Installed %s; selected-file restore support is ready." % out.strip())
+                return True
             finally:
                 sshops.run(client, "rm -rf -- %s" % sshops.shq(folder), timeout=30)
                 client.close()
@@ -1049,6 +1086,31 @@ def job(job_id):
     return render_template("job.html", j=row)
 
 
+@app.route("/jobs/<int:job_id>/output")
+@login_required
+def job_output(job_id):
+    try:
+        offset = int(request.args.get("offset", "0"))
+    except ValueError:
+        abort(400)
+    if offset < 0:
+        abort(400)
+    # Return only new text. The browser uses this Python character offset
+    # rather than JavaScript's UTF-16 length, including for emoji in logs.
+    with closing(db()) as c:
+        row = c.execute(
+            "SELECT status, finished, output FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        abort(404)
+    output = row["output"] or ""
+    reset = offset > len(output)
+    response = jsonify(status=row["status"], finished=row["finished"],
+                       output=output if reset else output[offset:],
+                       offset=len(output), reset=reset)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 SECRET_SETTINGS = ("ts_authkey", "syno_pass", "smtp_pass")
 
 
@@ -1195,7 +1257,8 @@ def snapshot_maps(nas, base):
 
 
 def archive_data(row, snap, arch):
-    """Use new snapshot indexes; stream metadata once for legacy tar.gz backups."""
+    """Read indexes; build legacy indexes on the NAS when Python is available."""
+    helper = require_archive_helper()
     key = (row["id"], row["host"], get_setting("syno_host"), get_setting("syno_path"), snap, arch)
     with ARCHIVE_CACHE_LOCK:
         cached = ARCHIVE_CACHE.get(key)
@@ -1208,22 +1271,42 @@ def archive_data(row, snap, arch):
     try:
         parents, roots = snapshot_maps(nas, base)
         remote = base + "/files/" + arch
-        rc, out = sshops.run(nas, "cat %s 2>/dev/null" % sshops.shq(remote[:-7] + ".index.json"), timeout=60)
+        index_path = remote[:-7] + ".index.json"
+        rc, out = sshops.run(nas, "cat %s 2>/dev/null" % sshops.shq(index_path), timeout=60)
         index = None
         if rc == 0:
             try:
                 stored = json.loads(out)
                 if stored.get("version") == 1:
-                    index = archiveops.complete_index(stored["entries"])
+                    index = helper.complete_index(stored["entries"])
             except (ValueError, KeyError, TypeError, AttributeError):
                 pass  # Missing/damaged indexes can be rebuilt from the archive.
+        if index is None:
+            # Older snapshots can be large. Scan them on the NAS and transfer
+            # only the resulting metadata instead of the whole compressed file.
+            # NASes without Python or write access retain the streaming fallback.
+            rc, _ = sshops.run(nas, "command -v python3 >/dev/null 2>&1", timeout=30)
+            if rc == 0:
+                with open(helper.__file__, encoding="utf-8") as source:
+                    code = source.read()
+                cmd = "python3 -c %s index-cache %s" % (sshops.shq(code), sshops.shq(remote))
+                rc, _ = sshops.run(nas, cmd, timeout=600)
+                if rc == 0:
+                    rc, out = sshops.run(nas, "cat %s 2>/dev/null" % sshops.shq(index_path), timeout=60)
+                    if rc == 0:
+                        try:
+                            stored = json.loads(out)
+                            if stored.get("version") == 1:
+                                index = helper.complete_index(stored["entries"])
+                        except (ValueError, KeyError, TypeError, AttributeError):
+                            pass
         if index is None:
             chan = nas.get_transport().open_session()
             chan.settimeout(600)
             chan.exec_command("cat -- %s" % sshops.shq(remote))
             try:
                 with chan.makefile("rb") as stream:
-                    index = archiveops.read_index(stream)
+                    index = helper.read_index(stream)
                 while chan.recv(65536):
                     pass
                 if chan.recv_exit_status() != 0:
@@ -1327,7 +1410,7 @@ def snapshot_restore_selected(server_id, snap):
         data = archive_data(row, snap, arch)
         if not data["parent"]:
             raise ValueError("This snapshot has no original path map. Download it for a manual restore.")
-        chosen = archiveops.selected_entries(data["index"], selection)
+        chosen = require_archive_helper().selected_entries(data["index"], selection)
     except Exception as exc:
         flash(str(exc))
         return redirect(url_for("snapshot_files", server_id=server_id, snap=snap, arch=arch))
@@ -1490,36 +1573,100 @@ def snapshot_download(server_id, snap):
 
 
 # ---------------------------------------------------------- panel updates ---
+UPDATE_LOCK = threading.Lock()
+
+
 def apply_update_from(root):
+    if not UPDATE_LOCK.acquire(blocking=False):
+        raise RuntimeError("A dashboard update is already in progress.")
+    try:
+        _apply_update_from(root)
+    finally:
+        UPDATE_LOCK.release()
+
+
+def _apply_update_from(root):
     """Copy panel + agent files from an extracted/checked-out project root.
     Raises on problems; config/db/keys are never touched."""
-    if not os.path.isfile(os.path.join(root, "dashboard", "app.py")):
-        raise ValueError("no dashboard/app.py found in " + root)
     app_dir = CFG.get("APP_DIR") or os.path.dirname(os.path.abspath(__file__))
     dsrc = os.path.join(root, "dashboard")
-    for name in ("app.py", "sshops.py", "requirements.txt"):
-        src = os.path.join(dsrc, name)
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(app_dir, name))
-    for dname in ("templates", "static"):
-        src = os.path.join(dsrc, dname)
-        if os.path.isdir(src):
-            dst = os.path.join(app_dir, dname)
-            shutil.rmtree(dst, ignore_errors=True)
-            shutil.copytree(src, dst)
-    asrc = os.path.join(root, "agent")
-    if os.path.isdir(asrc):
-        os.makedirs(CFG["AGENT_DIR"], exist_ok=True)
-        for name in ("webbackup", "install.sh", "archiveops.py"):
-            src = os.path.join(asrc, name)
-            if os.path.isfile(src):
-                dst = os.path.join(CFG["AGENT_DIR"], name)
-                shutil.copy2(src, dst)
-                os.chmod(dst, 0o755)
+    if os.path.realpath(dsrc) == os.path.realpath(app_dir):
+        raise ValueError("The project folder must be separate from the installed dashboard.")
+    required = ("dashboard/app.py", "dashboard/sshops.py", "dashboard/requirements.txt",
+                "dashboard/templates/base.html", "dashboard/templates/_ui.html",
+                "dashboard/templates/_schedule.html", "dashboard/templates/snapshot_files.html",
+                "dashboard/templates/restore_review.html", "dashboard/static/style.css",
+                "dashboard/templates/job.html", "dashboard/static/job-output.js",
+                "dashboard/static/dashboard.js", "dashboard/static/snapshot-files.js",
+                "dashboard/static/snapshot-files.css", "agent/webbackup", "agent/install.sh",
+                "agent/archiveops.py")
+    missing = [name for name in required if not os.path.isfile(os.path.join(root, name))]
+    if missing:
+        raise ValueError("Incomplete project upload. Missing: " + ", ".join(missing))
+    # Reject invalid Python before replacing any installed files.
+    for name in ("dashboard/app.py", "dashboard/sshops.py", "agent/archiveops.py"):
+        path = os.path.join(root, name)
+        with open(path, "rb") as source:
+            compile(source.read(), path, "exec")
     pip = os.path.join(app_dir, "venv", "bin", "pip")
-    req = os.path.join(app_dir, "requirements.txt")
-    if os.path.isfile(pip) and os.path.isfile(req):
-        subprocess.run([pip, "install", "-q", "-r", req], timeout=300, check=False)
+    if os.path.isfile(pip):
+        subprocess.run([pip, "install", "-q", "-r", os.path.join(dsrc, "requirements.txt")],
+                       timeout=300, check=True)
+    asrc = os.path.join(root, "agent")
+    payload = [(os.path.join(dsrc, name), os.path.join(app_dir, name))
+               for name in ("sshops.py", "requirements.txt", "templates", "static")]
+    payload += [(os.path.join(asrc, name), os.path.join(CFG["AGENT_DIR"], name))
+                for name in ("webbackup", "install.sh", "archiveops.py")]
+    # The entry point is installed last, after its helper and assets.
+    payload.append((os.path.join(dsrc, "app.py"), os.path.join(app_dir, "app.py")))
+    token = secrets.token_hex(12)
+    staged, backups, installed = [], {}, []
+
+    def remove_path(path):
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        elif os.path.lexists(path):
+            os.unlink(path)
+
+    try:
+        # Stage alongside each destination so every rename stays on the same
+        # filesystem, including installations with a separate AGENT_DIR.
+        for src, dst in payload:
+            parent = os.path.dirname(dst)
+            os.makedirs(parent, exist_ok=True)
+            new = os.path.join(parent, ".wbupdate-new-%s-%s" % (token, os.path.basename(dst)))
+            staged.append((new, dst))
+            if os.path.isdir(src):
+                shutil.copytree(src, new)
+            else:
+                shutil.copy2(src, new)
+                if os.path.dirname(src) == asrc:
+                    os.chmod(new, 0o755)
+        for new, dst in staged:
+            if os.path.lexists(dst):
+                old = os.path.join(os.path.dirname(dst), ".wbupdate-old-%s-%s" % (token, os.path.basename(dst)))
+                os.replace(dst, old)
+                backups[dst] = old
+            os.replace(new, dst)
+            installed.append(dst)
+    except Exception:
+        # Restore the previous complete installation if publishing any file
+        # fails. Config, database, and keys are outside the update payload.
+        for _, dst in reversed(staged):
+            if dst in installed:
+                remove_path(dst)
+            if dst in backups:
+                os.replace(backups[dst], dst)
+        raise
+    else:
+        for old in backups.values():
+            try:
+                remove_path(old)
+            except OSError:
+                app.logger.warning("Update installed; previous files remain at %s", old)
+    finally:
+        for new, _ in staged:
+            remove_path(new)
 
 
 def restart_and_confirm(extra=""):
