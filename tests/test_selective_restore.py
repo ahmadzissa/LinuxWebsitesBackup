@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -204,6 +205,50 @@ class DashboardTests(unittest.TestCase):
             session.clear()
         self.assertEqual(self.client.get(self.base + "/file-index?archive=" + self.arch).status_code, 302)
         self.assertEqual(self.client.get(self.base + "/files/" + self.arch).status_code, 302)
+        self.assertEqual(self.client.get(self.base + "/files/" + self.arch + "/download").status_code, 302)
+
+    def test_member_download_on_nas_and_through_dashboard(self):
+        path = "public_html/uploads/صورة + '1'#.jpg"
+        binary = bytes(range(256)) * 100
+        url = self.base + "/files/" + self.arch + "/download"
+        nas = patch.object(dashboard, "nas_connect").start().return_value
+        patch.object(dashboard, "server_hostname", return_value="server").start()
+        patch.object(dashboard, "get_setting", return_value="/volume1/backups").start()
+        channel = nas.get_transport.return_value.open_session.return_value
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / self.arch
+            make_archive(archive, {path: binary, "public_html/empty": b""},
+                         {"public_html/link": path})
+            for requested, expected in [(path, binary), ("public_html/empty", b""),
+                                        ("public_html", None), ("public_html/link", None),
+                                        ("public_html/missing", None)]:
+                remote_output = subprocess.check_output(
+                    [sys.executable, archiveops.__file__, "download", "--", str(archive), requested])
+                for output in (remote_output, b"archive\n" + archive.read_bytes()):
+                    with self.subTest(path=requested, nas_extraction=output is remote_output):
+                        channel.makefile.return_value = io.BytesIO(output)
+                        channel.close.reset_mock()
+                        nas.close.reset_mock()
+                        with self.client.get(url, query_string={"path": requested}) as response:
+                            if expected is None:
+                                self.assertEqual(response.status_code, 404)
+                            else:
+                                self.assertEqual(response.status_code, 200)
+                                self.assertEqual(response.content_length, len(expected))
+                                self.assertTrue(response.headers["Content-Disposition"].startswith("attachment;"))
+                                self.assertEqual(response.data, expected)
+                        channel.close.assert_called_once()
+                        nas.close.assert_called_once()
+        self.archive_data.assert_not_called()  # No index or restore mapping required.
+        self.jobs.assert_not_called()
+
+    def test_invalid_member_download_is_rejected_before_connecting(self):
+        with patch.object(dashboard, "nas_connect") as nas:
+            for path in ("", "/etc/passwd", "../index.php", "dir/a\r\nb"):
+                response = self.client.get(self.base + "/files/" + self.arch + "/download",
+                                           query_string={"path": path})
+                self.assertEqual(response.status_code, 400)
+            nas.assert_not_called()
 
     def test_file_browser_renders_and_index_supplies_actual_root(self):
         self.assertEqual(self.client.get(self.base + "/files/" + self.arch).status_code, 200)

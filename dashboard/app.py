@@ -25,10 +25,10 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from functools import wraps
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import ExitStack, closing
 
 from flask import (Flask, Response, abort, flash, g, jsonify, redirect,
-                   render_template, request, send_from_directory, session,
+                   render_template, request, send_file, send_from_directory, session,
                    url_for)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -1361,6 +1361,59 @@ def snapshot_file_index(server_id, snap):
         return jsonify(error="Could not read the backup files: %s" % exc), 502
 
 
+@app.get("/servers/<int:server_id>/snapshots/<snap>/files/<arch>/download")
+@login_required
+def snapshot_member_download(server_id, snap, arch):
+    validate_archive_request(snap, arch)
+    row = server_row(server_id)
+    helper = require_archive_helper()
+    try:
+        path = helper.safe_path(request.args.get("path", ""))
+    except ValueError as exc:
+        abort(400, str(exc))
+
+    with ExitStack() as resources:
+        try:
+            host = server_hostname(row)
+            remote = "%s/%s/%s/files/%s" % (get_setting("syno_path").rstrip("/"), host, snap, arch)
+            nas = resources.enter_context(closing(nas_connect()))
+            chan = resources.enter_context(closing(nas.get_transport().open_session()))
+            chan.settimeout(600)
+            # Prefer scanning on the NAS so only the chosen file crosses SSH.
+            # Older NASes can send the compressed stream to the same reader here.
+            with open(helper.__file__, encoding="utf-8") as source:
+                code = source.read()
+            chan.exec_command("if command -v python3 >/dev/null 2>&1; then "
+                              "exec python3 -c %s download -- %s %s; "
+                              "else printf 'archive\\n' && exec cat -- %s; fi"
+                              % (sshops.shq(code), sshops.shq(remote), sshops.shq(path), sshops.shq(remote)))
+            stream = resources.enter_context(chan.makefile("rb"))
+            header = stream.readline(32)
+            if header == b"archive\n":
+                size, contents = resources.enter_context(helper.open_member(stream, path))
+            elif header == b"missing\n":
+                raise KeyError(path)
+            elif re.fullmatch(rb"[0-9]+\n", header):
+                size, contents = int(header), stream
+            else:
+                raise ValueError("Unexpected archive reader response")
+        except KeyError:
+            abort(404, "This regular file was not found in the backup.")
+        except Exception:
+            app.logger.exception("Could not open a backup file for download")
+            abort(502, "Could not read the file from the backup.")
+
+        response = send_file(contents, mimetype="application/octet-stream", as_attachment=True,
+                             download_name=path.rsplit("/", 1)[-1], conditional=False, etag=False)
+        response.content_length = size
+        response.cache_control.no_store = True
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Run close callbacks even when the client stops reading mid-download.
+        response.direct_passthrough = False
+        response.call_on_close(resources.pop_all().close)
+        return response
+
+
 def selected_restore_work(row, snap, arch, selection):
     def work(append):
         client = connect_server(row)
@@ -1432,6 +1485,7 @@ def snapshot_browse(server_id, snap):
     if not SNAP_RE.match(snap):
         abort(400)
     files, sites, dbs, error = [], [], [], ""
+    file_sizes, db_sizes = {}, {}
     nas = None
     try:
         host = server_hostname(row)
@@ -1451,24 +1505,48 @@ def snapshot_browse(server_id, snap):
             size, path = line.split("\t", 1)
             entry = {"path": path, "size": human_bytes(int(size or 0))}
             files.append(entry)
+            file_sizes[path] = entry["size"]
             if (path.startswith("files/") and path.endswith(".tar.gz")):
                 sites.append(path[len("files/"):])
             # older snapshots: loose per-database dumps
             if (path.startswith("databases/mysql_") and path.endswith(".sql.gz")):
-                dbs.append(path[len("databases/mysql_"):-len(".sql.gz")])
+                dbname = path[len("databases/mysql_"):-len(".sql.gz")]
+                dbs.append(dbname)
+                db_sizes[dbname] = entry["size"]
         # databases inside the bundle
-        rc, out = sshops.run(nas, "tar -tf %s 2>/dev/null"
+        rc, out = sshops.run(nas, "LC_ALL=C tar -tvf %s 2>/dev/null"
                              % sshops.shq(base + "/databases/mysql_all_databases.tar"),
                              timeout=60)
         if rc == 0:
-            for m in out.split():
-                if m.startswith("mysql_") and m.endswith(".sql.gz"):
-                    dbs.append(m[len("mysql_"):-len(".sql.gz")])
+            for line in out.splitlines():
+                fields = line.split(None, 5)
+                if len(fields) != 6 or not fields[0].startswith("-"):
+                    continue
+                member = fields[5]
+                if member.startswith("mysql_") and member.endswith(".sql.gz"):
+                    dbname = member[len("mysql_"):-len(".sql.gz")]
+                    dbs.append(dbname)
+                    try:
+                        size = int(fields[2])
+                        if size >= 0:
+                            # Downloads prefer loose dumps if both exist.
+                            db_sizes.setdefault(dbname, human_bytes(size))
+                    except ValueError:
+                        pass  # Keep the database visible with an unknown size.
+        else:
+            # Retain name-only browsing if this NAS cannot list member sizes.
+            rc, out = sshops.run(nas, "tar -tf %s 2>/dev/null"
+                                 % sshops.shq(base + "/databases/mysql_all_databases.tar"),
+                                 timeout=60)
+            if rc == 0:
+                dbs.extend(m[len("mysql_"):-len(".sql.gz")] for m in out.splitlines()
+                           if m.startswith("mysql_") and m.endswith(".sql.gz"))
         # path map -> friendly site names (user + domain)
         paths_map, roots_map = snapshot_maps(nas, base)
         named, sys_sites = [], []
         for arch in sorted(set(sites)):
             info = classify_site(arch, paths_map.get(arch, ""), roots_map.get(arch, ""))
+            info["size"] = file_sizes.get("files/" + arch, "—")
             (named if info["url"] else sys_sites).append(info)
         named.sort(key=lambda i: i["label"].lower())
         files.sort(key=lambda f: f["path"])
@@ -1483,7 +1561,7 @@ def snapshot_browse(server_id, snap):
             nas.close()
     return render_template("snapshot.html", s=row, snap=snap, files=files,
                            others=others, sites=named, sys_sites=sys_sites,
-                           dbs=sorted(set(dbs)), error=error)
+                           dbs=sorted(set(dbs)), db_sizes=db_sizes, error=error)
 
 
 @app.route("/servers/<int:server_id>/snapshots/<snap>/dbdump/<dbname>")
@@ -1595,6 +1673,7 @@ def _apply_update_from(root):
     required = ("dashboard/app.py", "dashboard/sshops.py", "dashboard/requirements.txt",
                 "dashboard/templates/base.html", "dashboard/templates/_ui.html",
                 "dashboard/templates/_schedule.html", "dashboard/templates/snapshot_files.html",
+                "dashboard/templates/snapshot.html",
                 "dashboard/templates/restore_review.html", "dashboard/static/style.css",
                 "dashboard/templates/job.html", "dashboard/static/job-output.js",
                 "dashboard/static/dashboard.js", "dashboard/static/snapshot-files.js",

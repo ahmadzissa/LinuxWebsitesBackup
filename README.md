@@ -97,10 +97,14 @@ dashboard's SSH key, your admin login, and a systemd service. Then open
 ### Restore selected website files
 
 1. Open a snapshot and click **Browse & select** beside the website's domain.
-2. Browse `public_html` (HestiaCP), or the website's document root. Check one or
-   more files or folders; selections remain when you open another folder.
-3. Click **Review selected restore**, check the original destination and file
-   count, then confirm **Replace selected files on server**. Follow the job log.
+2. Browse `public_html` (HestiaCP), or the website's document root. The browser
+   receives a file index. **Download** beside a regular file saves its original
+   contents to your device. The NAS scans the compressed archive up to that
+   file, or the dashboard does the scan over SSH if the NAS lacks Python 3.
+3. Click **Restore** beside a file to review just that file. For several items,
+   check files or folders as you browse and click **Review selected restore**.
+   Check the destination and confirm **Replace selected files on server**.
+   The server fetches the website archive and restores the reviewed selection.
 
 Only selected regular files are replaced. Missing selected files/folders are
 created, and other live files remain in place. Folder selections include their
@@ -118,6 +122,11 @@ Agent v1.5.0 adds Python 3, the archive helper, domain-based filenames (for exam
 path-named archives are still supported and are indexed on demand. Direct
 restores require the snapshot's original `files/PATHS.txt` mapping; snapshots
 without that mapping can be browsed and downloaded for a manual restore.
+
+Snapshot pages show a separate backup size for each website and each database
+dump, including database dumps stored inside a bundle. These are the compressed
+download sizes, not live website or database disk usage. Sizes are read from
+existing backup files, so older snapshots do not need to be recreated.
 
 For an older snapshot without a file index, the dashboard builds an index on
 the NAS when Python 3 and write access are available. It creates a sidecar

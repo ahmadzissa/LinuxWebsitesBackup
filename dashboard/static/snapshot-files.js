@@ -124,11 +124,30 @@
       }
       row.append(checkCell, nameCell, element('td', entry.type === 'file' ? size(entry.size) : '—', 'mono'),
         element('td', entry.modified ? new Date(entry.modified * 1000).toLocaleString() : '—', 'hint'));
+      const actionsCell = element('td');
+      if (entry.type === 'file') {
+        const actions = element('div', undefined, 'file-actions');
+        const download = element('a', 'Download', 'btn small secondary');
+        const url = new URL(browser.dataset.downloadUrl, document.baseURI);
+        url.searchParams.set('path', entry.path);
+        download.href = url.href;
+        download.setAttribute('aria-label', 'Download ' + name);
+        const restore = element('button', 'Restore', 'small secondary');
+        restore.type = 'submit';
+        restore.setAttribute('form', 'single-restore-form');
+        restore.name = 'paths';
+        restore.value = entry.path;
+        restore.disabled = !restorable;
+        restore.setAttribute('aria-label', 'Restore ' + name);
+        actions.append(download, restore);
+        actionsCell.append(actions);
+      }
+      row.append(actionsCell);
       rows.append(row);
     }
     if (!visible.length) {
       const row = element('tr'), cell = element('td', filter.value ? 'No matching files or folders.' : 'This folder is empty.');
-      cell.colSpan = 4; row.append(cell); rows.append(row);
+      cell.colSpan = 5; row.append(cell); rows.append(row);
     }
     document.getElementById('folder-status').textContent = visible.length + ' item(s) in this folder';
     updateSelection();
@@ -170,7 +189,7 @@
       selected = new Set(saved.filter(p => nodes.has(p) && selectable(nodes.get(p))));
     } catch (_) { selected = new Set(); }
     status.hidden = restorable;
-    status.textContent = restorable ? '' : 'This older snapshot has no original path map. You can browse it, but restoring requires a manual download.';
+    status.textContent = restorable ? '' : 'This snapshot has no original restore destination. Use Download beside a file for manual recovery.';
     document.getElementById('browser-content').hidden = false;
     document.getElementById('selection-card').hidden = false;
     render();

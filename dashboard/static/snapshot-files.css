@@ -57,6 +57,12 @@
   overflow-x:auto
 }
 
+.file-actions {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px
+}
+
 .file-table td:first-child,.file-table th:first-child {
   width:45px
 }

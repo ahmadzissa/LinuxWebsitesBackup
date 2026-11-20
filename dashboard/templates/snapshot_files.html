@@ -9,17 +9,19 @@
   <div class="page-head">
     <div><span class="eyebrow">SELECTIVE RECOVERY</span>
       <h1 id="website-title">Browse backup files</h1>
-      <p>Select what you need. Review the changes before restoring.</p>
+      <p>Browsing loads the file list. The compressed backup stays on the NAS.</p>
     </div>
     <a class="btn secondary" href="{{ url_for('snapshot_browse', server_id=s.id, snap=snap) }}">{{ icon('arrow-left') }} Back to snapshot</a>
   </div>
-  <div class="card file-browser" id="file-browser" data-index-url="{{ url_for('snapshot_file_index', server_id=s.id, snap=snap, archive=arch) }}">
+  <div class="card file-browser" id="file-browser"
+       data-index-url="{{ url_for('snapshot_file_index', server_id=s.id, snap=snap, archive=arch) }}"
+       data-download-url="{{ url_for('snapshot_member_download', server_id=s.id, snap=snap, arch=arch) }}">
     <p id="load-status" role="status" class="hint">Reading backup files… Older backups may take longer to list the first time.</p>
     <div id="browser-content" hidden>
       <div class="file-destination">{{ icon('folder') }}<div><span>Restore destination on {{ s.name }}</span><strong class="mono" id="restore-destination"></strong>
         </div><span class="pill">{{ snap }}</span>
       </div>
-      <p class="hint">Select files or folders. Your selection stays as you browse. Folders include all regular files and subfolders; symbolic links and special files are skipped.</p>
+      <p class="hint">Download a file to open it on your device, or choose Restore to review its original destination. To restore several items, select files or folders as you browse. Folder restores skip links and special files.</p>
       <div class="file-toolbar">
         <nav class="file-breadcrumbs" aria-label="Backup folder" id="breadcrumbs">
         </nav>
@@ -36,6 +38,7 @@
               <th>Name</th>
               <th>Size</th>
               <th>Modified</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="file-rows">
@@ -46,6 +49,10 @@
       </p>
     </div>
   </div>
+  <form id="single-restore-form" method="post" action="{{ url_for('snapshot_restore_selected', server_id=s.id, snap=snap) }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="archive" value="{{ arch }}">
+  </form>
   <div class="card selection-card" id="selection-card" hidden>
     <div class="row-head">
       <div class="card-title">{{ icon('check-circle') }}<h2 id="selection-summary" aria-live="polite">No files selected</h2>

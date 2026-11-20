@@ -18,6 +18,7 @@ APP="/opt/webbackup-dashboard"
 for file in dashboard/app.py dashboard/sshops.py dashboard/requirements.txt \
             dashboard/templates/base.html dashboard/templates/_ui.html \
             dashboard/templates/_schedule.html dashboard/templates/snapshot_files.html \
+            dashboard/templates/snapshot.html \
             dashboard/templates/restore_review.html dashboard/static/style.css \
             dashboard/templates/job.html dashboard/static/job-output.js \
             dashboard/static/dashboard.js dashboard/static/snapshot-files.js \

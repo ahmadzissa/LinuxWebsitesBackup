@@ -73,6 +73,21 @@ def read_index(fileobj):
         return complete_index([member_entry(m) for m in archive])
 
 
+@contextmanager
+def open_member(source, path):
+    """Read one regular file in archive order without extracting to disk."""
+    path = safe_path(path)
+    with tarfile.open(fileobj=source, mode="r|gz") as archive:
+        for member in archive:
+            if safe_path(member.name) == path:
+                if member.isfile():
+                    with archive.extractfile(member) as contents:
+                        yield member.size, contents
+                    return
+                break
+    raise KeyError(path)
+
+
 def cache_index(archive_path):
     """Create a sidecar index without changing the archive or an existing index."""
     archive_path = os.fspath(archive_path)
@@ -255,7 +270,7 @@ def restore(archive_path, parent_path, selection):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("name", "index", "index-cache", "restore"))
+    parser.add_argument("command", choices=("name", "index", "index-cache", "download", "restore"))
     parser.add_argument("path")
     parser.add_argument("parent", nargs="?")
     parser.add_argument("selection", nargs="?")
@@ -267,6 +282,15 @@ def main():
             json.dump(read_index(source), sys.stdout, separators=(",", ":"))
     elif args.command == "index-cache":
         print(cache_index(args.path))
+    elif args.command == "download":
+        with open(args.path, "rb") as source:
+            try:
+                with open_member(source, args.parent) as (size, contents):
+                    sys.stdout.buffer.write(b"%d\n" % size)
+                    sys.stdout.buffer.flush()
+                    shutil.copyfileobj(contents, sys.stdout.buffer)
+            except KeyError:
+                sys.stdout.buffer.write(b"missing\n")
     else:
         with open(args.selection, encoding="utf-8") as source:
             restore(args.path, args.parent, json.load(source))
